@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: hnmd API
+  version: 1.0.0
+  description: |
+    HTTP API for hnmd.
+
+    hnmd periodically fetches the top Hacker News stories in the background, scrapes and
+    converts content to Markdown, and serves the latest cached snapshot from memory.
+    Requests to `GET /top` never trigger scraping.
+
+    When API key authentication is enabled (`API_KEYS` configured on the server), `GET /top`
+    requires `Authorization: Bearer <key>`. `GET /health` is public by default.
+  license:
+    name: MIT
+    url: https://opensource.org/licenses/MIT
+
+servers:
+  - url: http://localhost:8982
+    description: Local development server (default)
+
+tags:
+  - name: Snapshot
+    description: Cached Hacker News snapshot
+  - name: Health
+    description: Service health
+
+paths:
+  /top:
+    get:
+      tags: [Snapshot]
+      summary: Get cached top stories snapshot
+      description: |
+        Returns the currently cached snapshot produced by the background refresher.
+
+        - Returns `200` when a ready snapshot is available.
+        - Returns `503` during initial warm-up before the first ready snapshot exists.
+        - Returns `401` when API key authentication is enabled and the request is missing or has an invalid `Authorization: Bearer <key>`.
+
+        This endpoint does not trigger on-demand scraping.
+      operationId: getTopSnapshot
+      security:
+        - bearerApiKey: []
+        - {}
+      responses:
+        "200":
+          description: Cached snapshot available
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Snapshot"
+              examples:
+                success:
+                  summary: Snapshot with successful and failed items
+                  value:
+                    generated_at: "2026-11-15T18:30:00Z"
+                    next_refresh_at: "2026-11-15T19:00:00Z"
+                    refresh_interval: "30m0s"
+                    count: 2
+                    items:
+                      - id: 12345678
+                        rank: 1
+                        type: story
+                        title: "Example article title"
+                        url: "https://example.com/article"
+                        hn_url: "https://news.ycombinator.com/item?id=12345678"
+                        by: alice
+                        score: 321
+                        descendants: 98
+                        time: 1763229000
+                        published_at: "2026-11-15T17:50:00Z"
+                        domain: example.com
+                        markdown: "# Example article title\n\n- **Fuente:** https://example.com/article\n- **HN:** https://news.ycombinator.com/item?id=12345678\n- **Autor:** alice | **Puntos:** 321 | **Comentarios:** 98\n- **Publicado:** 2026-11-15T17:50:00Z | **Tipo:** story | **Dominio:** example.com\n\n---\n\nExtracted article body converted to Markdown...\n"
+                        status: ok
+                        error: null
+                        scraped_at: "2026-11-15T18:29:58Z"
+                      - id: 12345679
+                        rank: 2
+                        type: story
+                        title: "Site that failed to scrape"
+                        url: "https://blocked.example.com/post"
+                        hn_url: "https://news.ycombinator.com/item?id=12345679"
+                        by: bob
+                        score: 120
+                        descendants: 45
+                        time: 1763225400
+                        published_at: "2026-11-15T16:50:00Z"
+                        domain: blocked.example.com
+                        markdown: ""
+                        status: error
+                        error: "fetch: status 403"
+                        scraped_at: "2026-11-15T18:29:59Z"
+        "401":
+          description: Missing or invalid API key (when authentication is enabled)
+          headers:
+            WWW-Authenticate:
+              description: Bearer authentication challenge.
+              schema:
+                type: string
+                example: Bearer
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UnauthorizedResponse"
+              examples:
+                unauthorized:
+                  summary: Unauthorized response
+                  value:
+                    error: unauthorized
+                    message: "missing or invalid API key"
+        "503":
+          description: Initial warm-up in progress (no ready snapshot yet)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WarmingUpResponse"
+              examples:
+                warming_up:
+                  summary: Warm-up response
+                  value:
+                    status: warming_up
+                    message: "initial scrape in progress, try again shortly"
+
+  /health:
+    get:
+      tags: [Health]
+      summary: Health check
+      description: Returns a simple health response.
+      operationId: getHealth
+      responses:
+        "200":
+          description: Service is reachable
+          content:
+            text/plain:
+              schema:
+                type: string
+                example: ok
+              examples:
+                ok:
+                  value: ok
+
+components:
+  securitySchemes:
+    bearerApiKey:
+      type: http
+      scheme: bearer
+      description: >
+        API key passed as `Authorization: Bearer <key>`. Authentication is enabled when the server
+        is configured with `API_KEYS`.
+  schemas:
+    Snapshot:
+      type: object
+      additionalProperties: false
+      required:
+        - generated_at
+        - next_refresh_at
+        - refresh_interval
+        - count
+        - items
+      properties:
+        generated_at:
+          type: string
+          format: date-time
+          description: Time the snapshot was generated (RFC3339).
+        next_refresh_at:
+          type: string
+          format: date-time
+          description: Scheduled next refresh time (RFC3339).
+        refresh_interval:
+          type: string
+          description: Configured refresh interval as a Go duration string (e.g. `30m0s`).
+          examples: ["30m0s", "10m0s", "1h0m0s"]
+        count:
+          type: integer
+          minimum: 0
+          description: Number of items in the snapshot.
+        items:
+          type: array
+          description: Cached Hacker News items (typically up to 20).
+          items:
+            $ref: "#/components/schemas/NewsItem"
+        last_refresh_error:
+          type: string
+          description: >
+            Present when a full refresh cycle failed but a previously valid snapshot is still served.
+
+    NewsItem:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - rank
+        - type
+        - title
+        - url
+        - hn_url
+        - by
+        - score
+        - descendants
+        - time
+        - published_at
+        - domain
+        - markdown
+        - status
+        - error
+        - scraped_at
+      properties:
+        id:
+          type: integer
+          description: Hacker News item ID.
+        rank:
+          type: integer
+          minimum: 1
+          description: Rank within the fetched top stories list (1-based).
+        type:
+          type: string
+          description: Hacker News item type (commonly `story`).
+        title:
+          type: string
+          description: Item title.
+        url:
+          type: [string, "null"]
+          format: uri
+          description: External article URL, or `null` for text-only posts (e.g. Ask HN).
+        hn_url:
+          type: string
+          format: uri
+          description: Canonical Hacker News discussion URL.
+        by:
+          type: string
+          description: Item author/submitter.
+        score:
+          type: integer
+          description: Item score/points.
+        descendants:
+          type: integer
+          description: Comment count.
+        time:
+          type: integer
+          format: int64
+          description: Unix timestamp of item creation.
+        published_at:
+          type: string
+          description: RFC3339 timestamp derived from `time` (may be empty if unavailable).
+        domain:
+          type: string
+          description: Hostname of the external URL, or empty string when no external URL.
+        markdown:
+          type: string
+          description: >
+            Rendered Markdown for the item. Contains metadata and extracted content for successful items;
+            empty string when `status` is `error`.
+        status:
+          type: string
+          description: Per-item processing result.
+          enum: [ok, error]
+        error:
+          type: [string, "null"]
+          description: Error message when item processing fails; otherwise `null`.
+        scraped_at:
+          type: [string, "null"]
+          format: date-time
+          description: RFC3339 timestamp when the item was processed; may be `null` in edge cases.
+
+    WarmingUpResponse:
+      type: object
+      additionalProperties: false
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          const: warming_up
+        message:
+          type: string
+          example: "initial scrape in progress, try again shortly"
+
+    UnauthorizedResponse:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          example: unauthorized
+        message:
+          type: string
+          example: "missing or invalid API key"

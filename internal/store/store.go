@@ -6,22 +6,22 @@ import (
 )
 
 type NewsItem struct {
-	ID          int        `json:"id"`
-	Rank        int        `json:"rank"`
-	Type        string     `json:"type"`
-	Title       string     `json:"title"`
-	URL         *string    `json:"url"`
-	HNURL       string     `json:"hn_url"`
-	By          string     `json:"by"`
-	Score       int        `json:"score"`
-	Descendants int        `json:"descendants"`
-	Time        int64      `json:"time"`
-	PublishedAt string     `json:"published_at"`
-	Domain      string     `json:"domain"`
-	Markdown    string     `json:"markdown"`
-	Status      string     `json:"status"`
-	Error       *string    `json:"error"`
-	ScrapedAt   *string    `json:"scraped_at"`
+	ID          int     `json:"id"`
+	Rank        int     `json:"rank"`
+	Type        string  `json:"type"`
+	Title       string  `json:"title"`
+	URL         *string `json:"url"`
+	HNURL       string  `json:"hn_url"`
+	By          string  `json:"by"`
+	Score       int     `json:"score"`
+	Descendants int     `json:"descendants"`
+	Time        int64   `json:"time"`
+	PublishedAt string  `json:"published_at"`
+	Domain      string  `json:"domain"`
+	Markdown    string  `json:"markdown"`
+	Status      string  `json:"status"`
+	Error       *string `json:"error"`
+	ScrapedAt   *string `json:"scraped_at"`
 }
 
 type Snapshot struct {

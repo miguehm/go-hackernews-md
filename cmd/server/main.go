@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,36 @@ func getenv(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func parseBoolEnv(key string, def bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return def
+	}
+}
+
+func parseAPIKeys(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	keys := make([]string, 0, len(parts))
+	for _, p := range parts {
+		k := strings.TrimSpace(p)
+		if k != "" {
+			keys = append(keys, k)
+		}
+	}
+	return keys
 }
 
 func main() {
@@ -48,13 +79,34 @@ func main() {
 
 	svc.StartRefresher(ctx)
 
+	apiKeys := parseAPIKeys(os.Getenv("API_KEYS"))
+	protectHealth := parseBoolEnv("PROTECT_HEALTH", false)
+	authEnabled := len(apiKeys) > 0
+	if !authEnabled {
+		log.Println("warning: API key auth disabled (API_KEYS not set); GET /top is unauthenticated")
+	}
+
 	h := api.New(st)
 	mux := http.NewServeMux()
-	mux.HandleFunc("/top", h.Top)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+
+	topHandler := http.HandlerFunc(h.Top)
+	healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
+
+	if authEnabled {
+		auth := api.BearerAPIKeyAuth(apiKeys)
+		mux.Handle("/top", auth(topHandler))
+		if protectHealth {
+			mux.Handle("/health", auth(healthHandler))
+		} else {
+			mux.Handle("/health", healthHandler)
+		}
+	} else {
+		mux.Handle("/top", topHandler)
+		mux.Handle("/health", healthHandler)
+	}
 
 	srv := &http.Server{Addr: ":" + port, Handler: mux}
 
