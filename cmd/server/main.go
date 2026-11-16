@@ -83,28 +83,36 @@ func main() {
 	protectHealth := parseBoolEnv("PROTECT_HEALTH", false)
 	authEnabled := len(apiKeys) > 0
 	if !authEnabled {
-		log.Println("warning: API key auth disabled (API_KEYS not set); GET /top is unauthenticated")
+		log.Println("warning: API key auth disabled (API_KEYS not set); /v1 endpoints are unauthenticated")
 	}
 
-	h := api.New(st)
+	h := api.New(st, int(refreshInterval.Seconds()))
 	mux := http.NewServeMux()
 
-	topHandler := http.HandlerFunc(h.Top)
 	healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	})
 
+	var auth func(http.Handler) http.Handler
 	if authEnabled {
-		auth := api.BearerAPIKeyAuth(apiKeys)
-		mux.Handle("/top", auth(topHandler))
-		if protectHealth {
-			mux.Handle("/health", auth(healthHandler))
-		} else {
-			mux.Handle("/health", healthHandler)
+		auth = api.BearerAPIKeyAuth(apiKeys)
+	}
+	register := func(pattern string, handler http.Handler) {
+		if auth != nil {
+			mux.Handle(pattern, auth(handler))
+			return
 		}
+		mux.Handle(pattern, handler)
+	}
+
+	register("/v1/top", http.HandlerFunc(h.Index))
+	register("/v1/articles/{itemId}", http.HandlerFunc(h.Article))
+	register("/top", http.HandlerFunc(h.Top))
+
+	if protectHealth && auth != nil {
+		mux.Handle("/health", auth(healthHandler))
 	} else {
-		mux.Handle("/top", topHandler)
 		mux.Handle("/health", healthHandler)
 	}
 

@@ -2,15 +2,13 @@ package markdown
 
 import (
 	"fmt"
-	"html"
 	"net/url"
 	"strings"
-	"time"
-
-	"hnmd/internal/store"
 
 	htmltomd "github.com/JohannesKaufmann/html-to-markdown/v2"
 )
+
+const ContentType = "text/markdown; charset=utf-8"
 
 func HTMLToMarkdown(htmlStr string) (string, error) {
 	md, err := htmltomd.ConvertString(htmlStr)
@@ -21,16 +19,13 @@ func HTMLToMarkdown(htmlStr string) (string, error) {
 }
 
 type Meta struct {
-	Title       string
-	URL         string
-	HNURL       string
-	By          string
-	Score       int
-	Descendants int
-	PublishedAt string
-	Type        string
-	Domain      string
-	HasExternal bool
+	Title         string
+	URL           string
+	HNURL         string
+	By            string
+	Score         int
+	Descendants   int
+	PublishedDate string
 }
 
 func DomainFromURL(raw string) string {
@@ -45,100 +40,65 @@ func DomainFromURL(raw string) string {
 }
 
 func Render(meta Meta, body string) string {
-	source := "Ask HN / sin URL externa"
-	if meta.HasExternal && meta.URL != "" {
-		source = meta.URL
+	title := inlineText(meta.Title)
+	if title == "" {
+		title = "(untitled)"
 	}
-	if meta.Domain == "" {
-		meta.Domain = "-"
+	author := inlineText(meta.By)
+	if author == "" {
+		author = "unknown"
 	}
-	if meta.PublishedAt == "" {
-		meta.PublishedAt = "-"
+	published := inlineText(meta.PublishedDate)
+	if published == "" {
+		published = "unknown"
 	}
+
 	var b strings.Builder
-	b.WriteString("# ")
-	b.WriteString(escapeTitle(meta.Title))
-	b.WriteString("\n\n")
-	fmt.Fprintf(&b, "- **Fuente:** %s\n", source)
-	fmt.Fprintf(&b, "- **HN:** %s\n", meta.HNURL)
-	fmt.Fprintf(&b, "- **Autor:** %s | **Puntos:** %d | **Comentarios:** %d\n", safe(meta.By), meta.Score, meta.Descendants)
-	fmt.Fprintf(&b, "- **Publicado:** %s | **Tipo:** %s | **Dominio:** %s\n", meta.PublishedAt, safe(meta.Type), meta.Domain)
-	b.WriteString("\n---\n\n")
-	if strings.TrimSpace(body) == "" {
-		b.WriteString("_Sin contenido extraído._\n")
-	} else {
+	fmt.Fprintf(&b, "# %s\n\n", title)
+	fmt.Fprintf(&b, "> %s · %d points · %d comments · %s\n", author, meta.Score, meta.Descendants, published)
+	if hnURL := inlineText(meta.HNURL); hnURL != "" {
+		fmt.Fprintf(&b, "> HN: %s\n", hnURL)
+	}
+	if externalURL := inlineText(meta.URL); externalURL != "" {
+		fmt.Fprintf(&b, "> URL: %s\n", externalURL)
+	}
+	b.WriteString("\n")
+	body = strings.ReplaceAll(body, "\r\n", "\n")
+	body = strings.ReplaceAll(body, "\r", "\n")
+	if body = strings.TrimSpace(body); body != "" {
 		b.WriteString(body)
 		b.WriteString("\n")
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
-func escapeTitle(t string) string {
-	if t == "" {
-		return "(sin título)"
+func Slugify(s string) string {
+	var b strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(s) {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastDash = false
+		case b.Len() > 0 && !lastDash:
+			b.WriteByte('-')
+			lastDash = true
+		}
 	}
-	return t
+	out := strings.Trim(b.String(), "-")
+	if len(out) > 60 {
+		out = strings.Trim(out[:60], "-")
+	}
+	if out == "" {
+		out = "article"
+	}
+	return out
 }
 
-func safe(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
+func SuggestedFilename(id, title string) string {
+	return id + "-" + Slugify(title) + ".md"
 }
 
-func BuildNewsItem(rank int, id int, itemType, title, by, externalURL string, score, descendants int, ts int64, bodyMD string, status string, errMsg *string) store.NewsItem {
-	hnURL := fmt.Sprintf("https://news.ycombinator.com/item?id=%d", id)
-	var urlPtr *string
-	domain := ""
-	hasExt := false
-	if externalURL != "" {
-		u := externalURL
-		urlPtr = &u
-		domain = DomainFromURL(externalURL)
-		hasExt = true
-	}
-	meta := Meta{
-		Title:       title,
-		URL:         externalURL,
-		HNURL:       hnURL,
-		By:          by,
-		Score:       score,
-		Descendants: descendants,
-		PublishedAt: store.FormatTime(ts),
-		Type:        itemType,
-		Domain:      domain,
-		HasExternal: hasExt,
-	}
-	md := Render(meta, bodyMD)
-	scraped := store.NowRFC3339()
-	return store.NewsItem{
-		ID:          id,
-		Rank:        rank,
-		Type:        itemType,
-		Title:       title,
-		URL:         urlPtr,
-		HNURL:       hnURL,
-		By:          by,
-		Score:       score,
-		Descendants: descendants,
-		Time:        ts,
-		PublishedAt: store.FormatTime(ts),
-		Domain:      domain,
-		Markdown:    md,
-		Status:      status,
-		Error:       errMsg,
-		ScrapedAt:   &scraped,
-	}
+func inlineText(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
-
-func ErrorItem(rank int, id int, itemType, title, by, externalURL string, score, descendants int, ts int64, errMsg string) store.NewsItem {
-	e := errMsg
-	item := BuildNewsItem(rank, id, itemType, title, by, externalURL, score, descendants, ts, "", "error", &e)
-	item.Markdown = ""
-	return item
-}
-
-// Ensure time import used in some contexts
-var _ = time.Now
-var _ = html.EscapeString
