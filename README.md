@@ -1,43 +1,47 @@
 # hnmd
 
-`hnmd` is a Go backend that periodically fetches the top 20 Hacker News stories, extracts each story's content, converts it to Markdown, and serves a cached snapshot over HTTP as JSON.
+`hnmd` is a Go backend that periodically fetches the top Hacker News stories, extracts and converts their content to Markdown, and serves a file-based API for the KindleHome KOReader plugin.
 
-Scraping runs in the background (one pass per refresh cycle). API requests never trigger scraping; they only return the currently cached snapshot from memory.
+The API is split into a small metadata index and on-demand Markdown downloads:
+
+- `GET /v1/top` returns metadata only (never article bodies).
+- `GET|HEAD /v1/articles/{itemId}.md` returns the article as a Markdown file.
+- The server does not render or serve HTML; the client converts Markdown to HTML on-device.
+
+Scraping runs in the background. API requests never trigger scraping; they only read the latest in-memory snapshot.
 
 ## Features
 
 - Background refresh loop with initial warm-up on startup
-- Top 20 Hacker News stories per cycle (bounded concurrent processing)
-- Article extraction and HTML-to-Markdown conversion
-- In-memory snapshot store (thread-safe reads/writes)
-- Partial per-item failures are captured without failing the whole snapshot
-- Last valid snapshot is preserved if a full refresh cycle fails
+- Top 20 Hacker News stories per cycle, with bounded concurrency
+- Metadata index plus per-item Markdown files
+- Last-known-good article retention across refresh cycles
+- Header-only Markdown for deleted/dead/empty items
+- In-memory, thread-safe snapshot store
+- Optional bearer API key authentication
+- Index capped at 128 KiB, articles capped at 512 KiB
 
 ## Architecture
 
-**Request/data flow**
-
 1. `cmd/server/main.go` loads configuration, starts the refresher, and serves HTTP.
-2. `internal/service` fetches top story IDs and items from the Hacker News API, then processes items concurrently.
-3. For each item, `internal/scraper` fetches/extracts article HTML (or uses HN text for text-only posts) and `internal/markdown` converts/renders the final Markdown.
-4. `internal/store` keeps the latest ready snapshot in memory.
-5. `internal/api` serves cached data from the store (`GET /top`, `GET /health`).
-
-**Packages**
+2. `internal/service` fetches top story IDs and items from the Hacker News API and processes them concurrently.
+3. `internal/scraper` fetches and extracts article HTML; `internal/markdown` converts HTML to Markdown and renders the final article header.
+4. `internal/store` keeps one immutable snapshot containing the metadata index and article bodies.
+5. `internal/api` serves `/v1/top`, `/v1/articles/{itemId}.md`, the deprecated `/top` alias, and `/health` behavior from `main`.
 
 | Package | Responsibility |
 | --- | --- |
 | `cmd/server` | Entrypoint, env config, HTTP server, graceful shutdown |
-| `internal/api` | HTTP handlers (`/top`, `/health` behavior in main) |
-| `internal/service` | Refresh cycle, concurrency control, per-item processing, error handling |
-| `internal/store` | In-memory snapshot/item models and thread-safe access |
+| `internal/api` | HTTP handlers, auth middleware, JSON errors |
+| `internal/service` | Refresh cycle, concurrency, status mapping, retention, size limits |
+| `internal/store` | Index/article models and thread-safe snapshot access |
 | `internal/hn` | Hacker News Firebase API client |
 | `internal/scraper` | HTML fetch (timeouts/limits/content-type) and readability extraction |
-| `internal/markdown` | HTML-to-Markdown conversion and Markdown rendering/metadata |
+| `internal/markdown` | HTML-to-Markdown conversion, article rendering, slug/filename helpers |
 
 ## Requirements
 
-- Go 1.22+ (see `go.mod`)
+- Go 1.27.3 (see `go.mod`)
 
 ## Quickstart
 
@@ -48,6 +52,11 @@ go run ./cmd/server
 
 By default the server listens on `http://localhost:8982`.
 
+```bash
+curl -H "Authorization: Bearer <key>" http://localhost:8982/v1/top
+curl -H "Authorization: Bearer <key>" http://localhost:8982/v1/articles/42123456.md
+```
+
 ## Configuration
 
 Environment variables read at startup:
@@ -55,197 +64,207 @@ Environment variables read at startup:
 | Variable | Default | Format / Notes | Description |
 | --- | --- | --- | --- |
 | `PORT` | `8982` | string | HTTP listen port |
-| `REFRESH_INTERVAL` | `30m` | Go duration (`time.ParseDuration`, e.g. `10m`, `1h`) | Background refresh interval. **Invalid values cause startup failure.** |
+| `REFRESH_INTERVAL` | `30m` | Go duration (`time.ParseDuration`, e.g. `10m`, `1h`) | Background refresh interval. Invalid values cause startup failure. Also drives `Retry-After` and `refresh_interval_seconds`. |
 | `SCRAPE_TIMEOUT` | `10s` | Go duration | Timeout per target site fetch |
 | `HN_TIMEOUT` | `10s` | Go duration | Timeout for Hacker News API requests |
-| `API_KEYS` | _(empty)_ | Comma-separated string(s) | When set, enables API key auth. Requests to protected endpoints must send `Authorization: Bearer <key>`. Multiple keys are accepted for key rotation. |
-| `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. Default keeps `/health` public for probes. |
+| `API_KEYS` | _(empty)_ | Comma-separated string(s) | When set, enables API key auth. Protected endpoints require `Authorization: Bearer <key>`. Multiple keys are accepted for rotation. |
+| `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. |
 
 > **Security:** when authentication is enabled, run behind HTTPS so the bearer key is not exposed in transit. Keys are compared in constant time. If `API_KEYS` is unset, auth is disabled and a startup warning is logged.
 
-Values fixed in code (not configurable via env vars):
+Values fixed in code:
 
 | Setting | Value | Notes |
 | --- | --- | --- |
 | Top stories | `20` | Number of HN items per snapshot |
 | Max concurrency | `6` | Bounded concurrent item processing |
-| Max body size | `5MB` | Per-page fetch limit; larger bodies are rejected |
+| Max HTML body size | `5MB` | Per-page fetch limit |
+| Max index size | `128 KiB` | Response is trimmed by rank if necessary |
+| Max article size | `512 KiB` | Larger articles are reported as `error` / `too_large` |
 
 ## API
 
-See [`openapi.yaml`](./openapi.yaml) for the OpenAPI 3.1 specification.
+The canonical contract is [`openapi.yaml`](./openapi.yaml) (OpenAPI 3.0.3). The production base URL is `https://hnmd.miguehm.com/v1`.
 
-### `GET /top`
+### `GET /v1/top`
 
-Returns the cached snapshot. This endpoint does not trigger scraping.
+Returns the metadata index. This endpoint never triggers scraping.
 
-- `200 OK` (`application/json`): snapshot with `generated_at`, `next_refresh_at`, `refresh_interval`, `count`, `items`, and optional `last_refresh_error`
-- `401 Unauthorized` (`application/json`): missing or invalid `Authorization: Bearer <key>` when `API_KEYS` is configured (`WWW-Authenticate: Bearer`)
-- `503 Service Unavailable` (`application/json`): warm-up state before the first ready snapshot
+Query parameters:
 
-Example (with auth enabled):
+- `limit` (integer, 1-30, default 20): maximum number of items. Invalid values are clamped: missing or non-numeric means 20, values below 1 become 1, values above 30 become 30.
+
+Response fields:
+
+- `schema_version`: currently `1`
+- `generated_at`: RFC3339 timestamp
+- `next_refresh_at`: RFC3339 timestamp or `null`
+- `refresh_interval_seconds`: integer or `null`
+- `returned_count`: number of items in `items`
+- `truncated`: `true` when the tail was cut by `limit` or by the 128 KiB cap
+- `items`: array of metadata items
+
+Because the server fetches 20 stories, `returned_count` is at most 20 even though `limit` accepts up to 30.
+
+Example:
 
 ```bash
-curl -H "Authorization: Bearer <key>" http://localhost:8982/top
+curl -H "Authorization: Bearer <key>" \
+  "https://hnmd.miguehm.com/v1/top?limit=20"
 ```
-
-### `GET /health`
-
-Simple health check.
-
-- `200 OK` (`text/plain`): `ok`
-
-Public by default (suitable for liveness/readiness probes). Set `PROTECT_HEALTH=true` to require the same bearer API key when auth is enabled.
-
-## Embedded Examples
-
-### `GET /top` — `200 OK` (cached snapshot)
 
 ```json
 {
-  "generated_at": "2026-11-15T18:30:00Z",
-  "next_refresh_at": "2026-11-15T19:00:00Z",
-  "refresh_interval": "30m0s",
-  "count": 2,
+  "schema_version": 1,
+  "generated_at": "2026-11-16T12:00:00Z",
+  "next_refresh_at": "2026-11-16T12:30:00Z",
+  "refresh_interval_seconds": 1800,
+  "returned_count": 1,
+  "truncated": false,
   "items": [
     {
-      "id": 12345678,
+      "id": "42123456",
       "rank": 1,
       "type": "story",
-      "title": "Example article title",
-      "url": "https://example.com/article",
-      "hn_url": "https://news.ycombinator.com/item?id=12345678",
+      "title": "A title about something",
+      "hn_url": "https://news.ycombinator.com/item?id=42123456",
+      "url": "https://example.com/post",
       "by": "alice",
-      "score": 321,
-      "descendants": 98,
-      "time": 1763229000,
-      "published_at": "2026-11-15T17:50:00Z",
+      "score": 231,
+      "descendants": 87,
+      "published_at": "2026-11-16T10:12:00Z",
       "domain": "example.com",
-      "markdown": "# Example article title\n\n- **Fuente:** https://example.com/article\n- **HN:** https://news.ycombinator.com/item?id=12345678\n- **Autor:** alice | **Puntos:** 321 | **Comentarios:** 98\n- **Publicado:** 2026-11-15T17:50:00Z | **Tipo:** story | **Dominio:** example.com\n\n---\n\nExtracted article body converted to Markdown...\n",
-      "status": "ok",
-      "error": null,
-      "scraped_at": "2026-11-15T18:29:58Z"
-    },
-    {
-      "id": 12345679,
-      "rank": 2,
-      "type": "story",
-      "title": "Site that failed to scrape",
-      "url": "https://blocked.example.com/post",
-      "hn_url": "https://news.ycombinator.com/item?id=12345679",
-      "by": "bob",
-      "score": 120,
-      "descendants": 45,
-      "time": 1763225400,
-      "published_at": "2026-11-15T16:50:00Z",
-      "domain": "blocked.example.com",
-      "markdown": "",
-      "status": "error",
-      "error": "fetch: status 403",
-      "scraped_at": "2026-11-15T18:29:59Z"
+      "content_status": "ok",
+      "content_error": null,
+      "content_url": "/v1/articles/42123456.md",
+      "content_type": "text/markdown; charset=utf-8",
+      "suggested_filename": "42123456-a-title-about-something.md",
+      "content_length": 18432,
+      "updated_at": "2026-11-16T11:58:00Z"
     }
   ]
 }
 ```
 
-Notes:
-- `items` may include a mix of `status: "ok"` and `status: "error"` entries in the same snapshot.
-- For item-level failures, `markdown` is an empty string and `error` contains the reason (e.g. fetch/extract/convert failure, deleted/dead item).
-- `last_refresh_error` is included only when the most recent full refresh failed but a previous valid snapshot is still being served.
+### `GET|HEAD /v1/articles/{itemId}.md`
 
-### `GET /top` — `401 Unauthorized` (when auth is enabled)
+Returns the article as a Markdown file. `HEAD` returns the same status and headers without a body.
+
+- `Content-Type: text/markdown; charset=utf-8`
+- `Content-Length`: exact byte count, at most 512 KiB
+- `Content-Disposition: inline; filename="<id>-<slug>.md"`
+- `ETag` and `Last-Modified`: informational only; conditional requests are not supported
+- Body: visible Markdown header followed by the article body, or header-only for empty/deleted items
+
+The article header format is:
+
+```markdown
+# A title about something
+
+> alice · 231 points · 87 comments · 2026-11-16
+> HN: https://news.ycombinator.com/item?id=42123456
+> URL: https://example.com/post
+
+Body in Markdown...
+```
+
+The `URL:` line is omitted when the item has no external URL. There is no YAML frontmatter.
+
+### `GET /top` (deprecated)
+
+Deprecated alias for `/v1/top`. It returns the same new index shape and includes `Deprecation: true`. The alias is documented here but is not part of the canonical OpenAPI contract.
+
+### `GET /health`
+
+Simple operational health check, outside the KindleHome OpenAPI contract.
+
+- `200 OK` (`text/plain`): `ok`
+
+Public by default. Set `PROTECT_HEALTH=true` to require the same bearer API key when auth is enabled.
+
+## Content status
+
+`content_status` is the source of truth for whether the client should download an article:
+
+| Status | Meaning | `.md` endpoint |
+| --- | --- | --- |
+| `ok` | Markdown is available and within limits | `200` |
+| `no_content` | No item metadata available to render | `404` |
+| `error` | HN/fetch/extract/convert failure, or article over 512 KiB | `404` |
+| `warming_up` | Reserved for future use; not emitted per item in the current design | `404` |
+
+If the service has no ready snapshot yet, both endpoints return `503` with `Retry-After`. A missing or unavailable item returns `404`; the client keeps any local copy it already has.
+
+## Error responses
 
 ```json
 {
   "error": "unauthorized",
-  "message": "missing or invalid API key"
+  "message": "Invalid or missing API key"
 }
 ```
-
-### `GET /top` — `503 Service Unavailable` (warm-up)
 
 ```json
 {
-  "status": "warming_up",
-  "message": "initial scrape in progress, try again shortly"
+  "error": "not_found",
+  "message": "No markdown available for this item",
+  "item_id": "42123456"
 }
 ```
 
-### `GET /health` — `200 OK`
-
-```text
-ok
+```json
+{
+  "error": "warming_up",
+  "message": "Server is warming up, try again later",
+  "retry_after_seconds": 1800
+}
 ```
 
-## Data Model Notes
+`ErrorResponse.error` is one of `unauthorized`, `warming_up`, `not_found`, or `internal_error`.
 
-**Snapshot (`/top` 200)**
+## Behavior and limitations
 
-| Field | Type | Notes |
-| --- | --- | --- |
-| `generated_at` | string (RFC3339) | Time the snapshot was produced |
-| `next_refresh_at` | string (RFC3339) | Scheduled next refresh time |
-| `refresh_interval` | string | Go duration string (e.g. `30m0s`) |
-| `count` | integer | Number of items in `items` |
-| `items` | array[NewsItem] | Cached story items |
-| `last_refresh_error` | string (optional) | Present when a refresh failed but last valid snapshot was retained |
-
-**NewsItem**
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| `id` | integer | Hacker News item ID |
-| `rank` | integer | Rank within the fetched top list (1-based) |
-| `type` | string | HN item type (e.g. `story`) |
-| `title` | string | Item title |
-| `url` | string \| null | External URL, or `null` for text-only posts (e.g. Ask HN) |
-| `hn_url` | string | Canonical Hacker News discussion URL |
-| `by` | string | Author |
-| `score` | integer | Score/points |
-| `descendants` | integer | Comment count |
-| `time` | integer | Unix timestamp |
-| `published_at` | string | RFC3339 timestamp (derived from `time`) |
-| `domain` | string | Hostname of external URL, empty string when not applicable |
-| `markdown` | string | Rendered Markdown; empty string on item error |
-| `status` | string | `ok` or `error` |
-| `error` | string \| null | Error message for failed item processing |
-| `scraped_at` | string \| null | RFC3339 timestamp when the item was processed |
-
-## Behavior, Limitations, and Operations
-
-- **No persistence:** snapshots are stored in memory only and are lost on restart.
-- **Warm-up:** until the first successful ready snapshot exists, `GET /top` returns `503`.
-- **Partial failures:** individual items may fail (fetch/extract/convert/deleted/dead); other items can still succeed in the same snapshot.
-- **Full refresh failures:** if fetching the top story list fails, the service keeps the last valid snapshot (when available) and records `last_refresh_error`.
+- **No persistence:** snapshots live in memory and are lost on restart.
+- **Warm-up:** until the first ready snapshot exists, both API endpoints return `503`.
+- **Partial failures:** individual item failures do not fail the whole snapshot.
+- **Retention:** while an item remains in the top 20, its last successful article body is reused if a refresh fails. The article header is re-rendered with current metadata.
+- **Full refresh failures:** if fetching the top story list fails, the last valid snapshot is kept and the error is retained internally for logs.
+- **Header-only articles:** deleted/dead items, Ask HN posts without text, and empty extractions are still served as `ok` with a visible header.
+- **Limits:** the index is kept under 128 KiB by trimming the lowest-ranked items; articles over 512 KiB are not stored.
 - **Third-party dependencies:** relies on the Hacker News Firebase API and external websites; availability, rate limiting, blocking, and content quality can affect results.
-- **Fetch constraints:** per-request timeouts, max response size (5MB), and content-type checks (HTML/XHTML expected for scraped pages).
 - **Extraction quality:** readability/Markdown conversion quality varies by source page.
-- **Authentication:** optional API key auth via `Authorization: Bearer <key>` when `API_KEYS` is set. `GET /health` stays public by default (`PROTECT_HEALTH=true` to protect it). Use HTTPS in production to protect the key in transit. If `API_KEYS` is unset, endpoints remain unauthenticated (startup warning logged).
-- **Shutdown:** server performs graceful HTTP shutdown on interrupt/termination signals.
+- **Authentication:** optional bearer auth when `API_KEYS` is set. Use HTTPS in production.
 
 ## Development
 
-Repository layout (high level):
-
 ```text
 cmd/server/          # application entrypoint
-internal/api/        # HTTP handlers
+internal/api/        # HTTP handlers, auth, errors
 internal/hn/         # Hacker News API client
-internal/markdown/   # HTML-to-Markdown and output rendering
+internal/markdown/   # HTML-to-Markdown, rendering, slug helpers
 internal/scraper/    # page fetch and content extraction
 internal/service/    # refresh orchestration and item processing
-internal/store/      # snapshot/item models and in-memory store
+internal/store/      # index/article models and in-memory store
 ```
 
 Key dependencies (see `go.mod` / `go.sum`): `github.com/go-shiori/go-readability`, `github.com/JohannesKaufmann/html-to-markdown/v2`, `golang.org/x/sync`.
 
-Suggested verification commands (no automated test suite is currently included):
+Verification:
 
 ```bash
-go fmt ./...
+gofmt -w .
 go vet ./...
+go test ./...
 go build ./...
 ```
+
+## Breaking changes from the old snapshot API
+
+- `/top` is now a deprecated alias for `/v1/top`; the canonical path is `/v1/top`.
+- The index no longer embeds `markdown`; article bodies are downloaded from `/v1/articles/{itemId}.md`.
+- `id` is a string, not an integer.
+- Snapshot fields `count`, `refresh_interval`, `last_refresh_error`, `time`, `status`, `error`, and `scraped_at` are gone; use `returned_count`, `refresh_interval_seconds`, `content_status`, `content_error`, and `updated_at`.
+- The warm-up error uses `error: "warming_up"` instead of `status: "warming_up"`.
 
 ## License
 
