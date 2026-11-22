@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	MaxTags      = 10
-	MaxTagLength = 32
-	MaxTextBytes = 300
-	MaxTitleSize = 200
+	MaxTags         = 10
+	MaxTagLength    = 32
+	MaxTextBytes    = 300
+	MaxTitleSize    = 200
+	MaxDetailsBytes = 1000
 )
 
 var ErrNotFound = errors.New("task not found")
@@ -54,6 +55,7 @@ type Task struct {
 	ID        string   `json:"id"`
 	Title     string   `json:"title"`
 	Tags      []string `json:"tags"`
+	Details   string   `json:"details,omitempty"`
 	Done      bool     `json:"done"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
@@ -109,6 +111,19 @@ func NormalizeTags(values []string) ([]string, error) {
 		return nil, validationError("tags", fmt.Sprintf("at most %d tags are allowed", MaxTags))
 	}
 	return out, nil
+}
+
+func NormalizeDetails(details string) string {
+	details = strings.ReplaceAll(details, "\r\n", "\n")
+	details = strings.ReplaceAll(details, "\r", "\n")
+	return strings.TrimRight(details, " \t\n")
+}
+
+func ValidateDetails(details string) error {
+	if len(details) > MaxDetailsBytes {
+		return validationError("details", fmt.Sprintf("details must be at most %d bytes", MaxDetailsBytes))
+	}
+	return nil
 }
 
 func extractHashtags(text string) ([]rune, []string) {

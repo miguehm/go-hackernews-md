@@ -453,9 +453,10 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Text string   `json:"text"`
-		Tags []string `json:"tags"`
-		Done bool     `json:"done"`
+		Text    string   `json:"text"`
+		Tags    []string `json:"tags"`
+		Details string   `json:"details"`
+		Done    bool     `json:"done"`
 	}
 	if !h.decodeJSON(w, r, &req) {
 		return
@@ -463,6 +464,11 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 
 	title, tags, err := todo.ParseText(req.Text, req.Tags)
 	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
+	details := todo.NormalizeDetails(req.Details)
+	if err := todo.ValidateDetails(details); err != nil {
 		writeTodoValidationError(w, err)
 		return
 	}
@@ -476,6 +482,7 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		ID:        id,
 		Title:     title,
 		Tags:      tags,
+		Details:   details,
 		Done:      req.Done,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -549,14 +556,15 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text *string   `json:"text"`
-		Tags *[]string `json:"tags"`
-		Done *bool     `json:"done"`
+		Text    *string   `json:"text"`
+		Tags    *[]string `json:"tags"`
+		Details *string   `json:"details"`
+		Done    *bool     `json:"done"`
 	}
 	if !h.decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Text == nil && req.Tags == nil && req.Done == nil {
+	if req.Text == nil && req.Tags == nil && req.Details == nil && req.Done == nil {
 		writeTodoError(w, http.StatusBadRequest, "invalid_request", "at least one field is required", "body", "")
 		return
 	}
@@ -576,6 +584,13 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			task.Tags = tags
+		}
+		if req.Details != nil {
+			details := todo.NormalizeDetails(*req.Details)
+			if err := todo.ValidateDetails(details); err != nil {
+				return err
+			}
+			task.Details = details
 		}
 		if req.Done != nil {
 			if *req.Done != task.Done {

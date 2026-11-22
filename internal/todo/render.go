@@ -164,6 +164,11 @@ func writeTask(b *strings.Builder, task Task, skipTag string) {
 		fmt.Fprintf(b, " #%s", tag)
 	}
 	b.WriteString("\n")
+	if task.Details != "" {
+		for _, line := range strings.Split(task.Details, "\n") {
+			fmt.Fprintf(b, "  %s\n", escapeDetails(line))
+		}
+	}
 }
 
 func splitByStatus(tasks []Task) ([]Task, []Task) {
@@ -192,6 +197,18 @@ func containsTag(tags []string, wanted string) bool {
 		}
 	}
 	return false
+}
+
+func escapeDetails(value string) string {
+	var b strings.Builder
+	for _, r := range value {
+		switch r {
+		case '\\', '`', '*', '_', '[', ']', '<', '>', '#':
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func escapeMarkdown(value string) string {
