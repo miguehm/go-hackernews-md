@@ -20,6 +20,8 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 - In-memory, thread-safe snapshot store
 - Optional bearer API key authentication
 - Index capped at 128 KiB, articles capped at 512 KiB
+- Todo module: JSON + Markdown views, flat `#tags`, deterministic ordering
+- Persistent, atomic JSON store for tasks with `.bak` fallback
 
 ## Architecture
 
@@ -27,7 +29,8 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 2. `internal/service` fetches top story IDs and items from the Hacker News API and processes them concurrently.
 3. `internal/scraper` fetches and extracts article HTML; `internal/markdown` converts HTML to Markdown and renders the final article header.
 4. `internal/store` keeps one immutable snapshot containing the metadata index and article bodies.
-5. `internal/api` serves `/v1/top`, `/v1/articles/{itemId}.md`, the deprecated `/top` alias, and `/health` behavior from `main`.
+5. `internal/api` serves `/v1/top`, `/v1/articles/{itemId}.md`, the todo endpoints under `/v1/todos*`, the deprecated `/top` alias, and `/health` behavior from `main`.
+6. `internal/todo` parses `#tags`, persists tasks in a JSON file and renders the Markdown views.
 
 | Package | Responsibility |
 | --- | --- |
@@ -35,6 +38,7 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 | `internal/api` | HTTP handlers, auth middleware, JSON errors |
 | `internal/service` | Refresh cycle, concurrency, status mapping, retention, size limits |
 | `internal/store` | Index/article models and thread-safe snapshot access |
+| `internal/todo` | Task model, `#tag` parsing, JSON persistence, Markdown rendering |
 | `internal/hn` | Hacker News Firebase API client |
 | `internal/scraper` | HTML fetch (timeouts/limits/content-type) and readability extraction |
 | `internal/markdown` | HTML-to-Markdown conversion, article rendering, slug/filename helpers |
@@ -55,6 +59,11 @@ By default the server listens on `http://localhost:8982`.
 ```bash
 curl -H "Authorization: Bearer <key>" http://localhost:8982/v1/top
 curl -H "Authorization: Bearer <key>" http://localhost:8982/v1/articles/42123456.md
+
+curl -H "Authorization: Bearer <key>" http://localhost:8982/v1/todos.md
+curl -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"text":"Comprar leche #casa #urgente"}' \
+  http://localhost:8982/v1/todos/tasks
 ```
 
 ## Configuration
@@ -69,6 +78,11 @@ Environment variables read at startup:
 | `HN_TIMEOUT` | `10s` | Go duration | Timeout for Hacker News API requests |
 | `API_KEYS` | _(empty)_ | Comma-separated string(s) | When set, enables API key auth. Protected endpoints require `Authorization: Bearer <key>`. Multiple keys are accepted for rotation. |
 | `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. |
+| `DATA_DIR` | `./data` | path | Directory for persistent data. Docker defaults to `/data`. |
+| `TODO_FILE` | `<DATA_DIR>/todos.json` | path | JSON file used by the todo store. A `.bak` copy is kept. |
+| `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. |
+| `TODO_ALLOW_INSECURE_WRITES` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | Allow todo writes when `API_KEYS` is unset. Off by default. |
+| `PUBLIC_BASE_URL` | _(empty)_ | URL | Optional external base URL used for absolute `hn_url` values in `/v1/todos/top`. |
 
 > **Security:** when authentication is enabled, run behind HTTPS so the bearer key is not exposed in transit. Keys are compared in constant time. If `API_KEYS` is unset, auth is disabled and a startup warning is logged.
 
@@ -81,6 +95,10 @@ Values fixed in code:
 | Max HTML body size | `5MB` | Per-page fetch limit |
 | Max index size | `128 KiB` | Response is trimmed by rank if necessary |
 | Max article size | `512 KiB` | Larger articles are reported as `error` / `too_large` |
+| Todo JSON index | `128 KiB` | Trimmed by dropping tasks from the tail |
+| Todo Markdown | `512 KiB` | Truncated with a visible note |
+| Todo write body | `64 KiB` | `413 payload_too_large` above this |
+| Tags per task | `10` | Flat, lowercase, max 32 chars each |
 
 ## API
 
@@ -182,6 +200,47 @@ Simple operational health check, outside the KindleHome OpenAPI contract.
 
 Public by default. Set `PROTECT_HEALTH=true` to require the same bearer API key when auth is enabled.
 
+### Todos
+
+The todo module lives under `/v1/todos*`. All endpoints accept the same bearer key as the rest of `/v1`.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `GET` | `/v1/todos?tag=&status=` | JSON index with counts and tag counters |
+| `GET\|HEAD` | `/v1/todos.md?tag=&status=` | Full Markdown list |
+| `GET` | `/v1/todos/tags` | Tag counters and untagged count |
+| `GET\|HEAD` | `/v1/todos/tags/{tag}.md?status=` | Flat Markdown for one tag |
+| `GET` | `/v1/todos/top?tags=true` | KindleHome-compatible index with `type: "todo"` items |
+| `POST` | `/v1/todos/tasks` | Create task |
+| `GET` | `/v1/todos/tasks/{id}` | Get task |
+| `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/state |
+| `DELETE` | `/v1/todos/tasks/{id}` | Delete task (idempotent `204`) |
+
+`status` is `open` (default), `done` or `all`. `tag` matches any of a task's tags.
+
+Create a task by typing hashtags in `text`:
+
+```bash
+curl -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"text":"Comprar leche #casa #urgente"}' \
+  http://localhost:8982/v1/todos/tasks
+```
+
+The server extracts `#casa` and `#urgente`, normalizes them to lowercase and removes them from the stored title. Multiple tags are supported; the first one is the primary tag used for grouping in the full Markdown view. A filter by a non-primary tag still finds the task.
+
+Mark it done:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"done":true}' http://localhost:8982/v1/todos/tasks/<id>
+```
+
+Ordering is deterministic: open tasks first, grouped by primary tag alphabetically, untagged last, oldest first within each group; done tasks appear under `## Hechas` sorted by completion time. There is no manual reordering.
+
+The Markdown is mutable, so clients must re-download it on refresh instead of applying the article "download only if missing" rule. Responses use `Cache-Control: no-store`.
+
+Writes require `API_KEYS`. If auth is disabled, write endpoints return `403` unless `TODO_ALLOW_INSECURE_WRITES=true`.
+
 ## Content status
 
 `content_status` is the source of truth for whether the client should download an article:
@@ -224,7 +283,7 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 
 ## Behavior and limitations
 
-- **No persistence:** snapshots live in memory and are lost on restart.
+- **No persistence (HN):** snapshots live in memory and are lost on restart. Todo tasks are persisted separately in `TODO_FILE`.
 - **Warm-up:** until the first ready snapshot exists, both API endpoints return `503`.
 - **Partial failures:** individual item failures do not fail the whole snapshot.
 - **Retention:** while an item remains in the top 20, its last successful article body is reused if a refresh fails. The article header is re-rendered with current metadata.
@@ -234,6 +293,10 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 - **Third-party dependencies:** relies on the Hacker News Firebase API and external websites; availability, rate limiting, blocking, and content quality can affect results.
 - **Extraction quality:** readability/Markdown conversion quality varies by source page.
 - **Authentication:** optional bearer auth when `API_KEYS` is set. Use HTTPS in production.
+- **Todo persistence:** tasks survive restarts; writes are atomic and a `.bak` copy is kept. Only one server instance should write the file.
+- **Todo tags:** flat, lowercase, ASCII (`[a-z0-9][a-z0-9_-]{0,31}`); `#café` is kept as plain text, not a tag.
+- **Todo refresh:** the Markdown views change over time; clients must re-download them instead of caching them like HN articles.
+- **Todo writes:** disabled with `403` when `API_KEYS` is unset unless `TODO_ALLOW_INSECURE_WRITES=true`.
 
 ## Development
 
@@ -245,6 +308,7 @@ internal/markdown/   # HTML-to-Markdown, rendering, slug helpers
 internal/scraper/    # page fetch and content extraction
 internal/service/    # refresh orchestration and item processing
 internal/store/      # index/article models and in-memory store
+internal/todo/       # task model, tags, JSON store, Markdown rendering
 ```
 
 Key dependencies (see `go.mod` / `go.sum`): `github.com/go-shiori/go-readability`, `github.com/JohannesKaufmann/html-to-markdown/v2`, `golang.org/x/sync`.

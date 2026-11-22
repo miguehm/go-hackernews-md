@@ -5,3 +5,4 @@ README.md
 LICENSE
 openapi.yaml
 **/*_test.go
+data/

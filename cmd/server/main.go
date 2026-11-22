@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"hnmd/internal/api"
 	"hnmd/internal/service"
 	"hnmd/internal/store"
+	"hnmd/internal/todo"
 )
 
 func getenv(key, def string) string {
@@ -35,6 +38,18 @@ func parseBoolEnv(key string, def bool) bool {
 	default:
 		return def
 	}
+}
+
+func parseIntEnv(key string, def int) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return def
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(v))
+	if err != nil {
+		return def
+	}
+	return n
 }
 
 func parseAPIKeys(raw string) []string {
@@ -86,6 +101,17 @@ func main() {
 		log.Println("warning: API key auth disabled (API_KEYS not set); /v1 endpoints are unauthenticated")
 	}
 
+	dataDir := getenv("DATA_DIR", "./data")
+	todoFile := getenv("TODO_FILE", filepath.Join(dataDir, "todos.json"))
+	todoMaxTasks := parseIntEnv("TODO_MAX_TASKS", 1000)
+	todoAllowInsecureWrites := parseBoolEnv("TODO_ALLOW_INSECURE_WRITES", false)
+	todoStore, err := todo.NewStore(todoFile, todoMaxTasks)
+	if err != nil {
+		log.Fatalf("failed to load todo store: %v", err)
+	}
+	log.Printf("todo store loaded from %s", todoFile)
+	todoHandler := api.NewTodoHandler(todoStore, os.Getenv("PUBLIC_BASE_URL"), authEnabled || todoAllowInsecureWrites)
+
 	h := api.New(st, int(refreshInterval.Seconds()))
 	mux := http.NewServeMux()
 
@@ -110,13 +136,28 @@ func main() {
 	register("/v1/articles/{itemId}", http.HandlerFunc(h.Article))
 	register("/top", http.HandlerFunc(h.Top))
 
+	register("/v1/todos", http.HandlerFunc(todoHandler.Index))
+	register("/v1/todos.md", http.HandlerFunc(todoHandler.Markdown))
+	register("/v1/todos/tags", http.HandlerFunc(todoHandler.Tags))
+	register("/v1/todos/tags/{tag}", http.HandlerFunc(todoHandler.TagsMarkdown))
+	register("/v1/todos/top", http.HandlerFunc(todoHandler.Top))
+	register("/v1/todos/tasks", http.HandlerFunc(todoHandler.Tasks))
+	register("/v1/todos/tasks/{id}", http.HandlerFunc(todoHandler.Task))
+
 	if protectHealth && auth != nil {
 		mux.Handle("/health", auth(healthHandler))
 	} else {
 		mux.Handle("/health", healthHandler)
 	}
 
-	srv := &http.Server{Addr: ":" + port, Handler: mux}
+	srv := &http.Server{
+		Addr:              ":" + port,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 
 	go func() {
 		log.Printf("listening on :%s (refresh every %s)", port, refreshInterval)
