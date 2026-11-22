@@ -30,10 +30,19 @@ type Config struct {
 	HNTimeout       time.Duration
 }
 
+type storyClient interface {
+	TopStoryIDs(ctx context.Context) ([]int, error)
+	Item(ctx context.Context, id int) (*hn.Item, error)
+}
+
+type htmlFetcher interface {
+	FetchHTML(ctx context.Context, url string) (string, error)
+}
+
 type Service struct {
 	cfg     Config
-	hn      *hn.Client
-	fetcher *scraper.Fetcher
+	hn      storyClient
+	fetcher htmlFetcher
 	store   *store.Store
 }
 
