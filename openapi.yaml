@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: hnmd API — KindleHome (file-based)
-  version: 1.1.0
+  version: 1.2.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -28,6 +28,8 @@ info:
 
     Módulo de tareas (`/todos`):
     - Multitag plano: hasta 10 tags por tarea; el primero es el primario.
+    - `details` es una nota opcional (≤1000 bytes) que se renderiza indentada
+      bajo la tarea en el Markdown; los clientes antiguos la ignoran.
     - `GET /todos` devuelve JSON; `GET /todos.md` devuelve Markdown.
     - El Markdown de tareas es mutable: el cliente debe re-descargarlo en
       cada refresco; no aplicar la política de "solo si falta el archivo local".
@@ -298,6 +300,7 @@ paths:
                       - id: a1b2c3d4e5f6a7b8
                         title: Comprar leche
                         tags: [casa, urgente]
+                        details: 'Llamar a la tienda antes de las 18:00'
                         done: false
                         created_at: '2026-11-22T13:00:00Z'
                         updated_at: '2026-11-22T13:00:00Z'
@@ -504,6 +507,7 @@ paths:
         El servidor extrae los hashtags, los normaliza a minúsculas y los
         elimina del título. `tags` añade tags explícitos. Resultado:
         tags parseados + explícitos, sin duplicados, máximo 10.
+        `details` es una nota opcional de hasta 1000 bytes.
       requestBody:
         required: true
         content:
@@ -537,6 +541,7 @@ paths:
                     id: a1b2c3d4e5f6a7b8
                     title: Comprar leche
                     tags: [casa, urgente]
+                    details: 'Llamar a la tienda antes de las 18:00'
                     done: false
                     created_at: '2026-11-22T14:00:00Z'
                     updated_at: '2026-11-22T14:00:00Z'
@@ -580,6 +585,7 @@ paths:
                     id: a1b2c3d4e5f6a7b8
                     title: Comprar leche
                     tags: [casa, urgente]
+                    details: 'Llamar a la tienda antes de las 18:00'
                     done: false
                     created_at: '2026-11-22T13:00:00Z'
                     updated_at: '2026-11-22T13:00:00Z'
@@ -598,6 +604,7 @@ paths:
       description: |
         Al menos un campo. Si `text` está presente, se vuelve a parsear
         título y tags. Si `tags` está presente, reemplaza la lista de tags.
+        Si `details` está presente, reemplaza la nota (vacía la borra).
         Si `done` está presente, cambia el estado y `done_at`.
       requestBody:
         required: true
@@ -632,6 +639,7 @@ paths:
                     id: a1b2c3d4e5f6a7b8
                     title: Comprar leche entera
                     tags: [casa]
+                    details: 'Llamar a la tienda antes de las 18:00'
                     done: false
                     created_at: '2026-11-22T13:00:00Z'
                     updated_at: '2026-11-22T15:00:00Z'
@@ -866,6 +874,7 @@ components:
 
                 ## #casa
                 - [ ] Comprar leche #urgente
+                  Llamar a la tienda antes de las 18:00
                 - [ ] Pagar alquiler
 
                 ## #trabajo
@@ -911,6 +920,7 @@ components:
                 > 3 abiertas · 1 hecha · 2026-11-22 14:00
 
                 - [ ] Comprar leche #urgente
+                  Llamar a la tienda antes de las 18:00
                 - [ ] Pagar alquiler
     TodosMarkdownHead:
       description: Disponible
@@ -1121,6 +1131,14 @@ components:
             type: string
             pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
             example: casa
+        details:
+          type: string
+          maxLength: 1000
+          description: |
+            Nota opcional de la tarea. Se preservan los saltos de línea y se
+            renderiza como líneas indentadas bajo la tarea en el Markdown.
+            Ausente o vacía en tareas creadas antes de este campo.
+          example: 'Llamar a la tienda antes de las 18:00'
         done:
           type: boolean
         created_at:
@@ -1261,6 +1279,11 @@ components:
           items:
             type: string
             pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
+        details:
+          type: string
+          maxLength: 1000
+          description: Nota opcional; los saltos de línea se preservan.
+          example: 'Llamar a la tienda antes de las 18:00'
         done:
           type: boolean
           default: false
@@ -1285,6 +1308,10 @@ components:
           items:
             type: string
             pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
+        details:
+          type: string
+          maxLength: 1000
+          description: Si está presente, reemplaza la nota (cadena vacía la borra).
         done:
           type: boolean
           description: Cambia el estado y actualiza `done_at`.

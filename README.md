@@ -215,7 +215,7 @@ The canonical contract for schemas, error codes and header semantics is [`openap
 | `GET` | `/v1/todos/top?tags=true` | KindleHome-compatible index with `type: "todo"` items |
 | `POST` | `/v1/todos/tasks` | Create task |
 | `GET` | `/v1/todos/tasks/{id}` | Get task |
-| `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/state |
+| `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/details/state |
 | `DELETE` | `/v1/todos/tasks/{id}` | Delete task (idempotent `204`) |
 
 `status` is `open` (default), `done` or `all`. `tag` matches any of a task's tags.
@@ -229,6 +229,14 @@ curl -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json
 ```
 
 The server extracts `#casa` and `#urgente`, normalizes them to lowercase and removes them from the stored title. Multiple tags are supported; the first one is the primary tag used for grouping in the full Markdown view. A filter by a non-primary tag still finds the task.
+
+An optional `details` note can be supplied on create or patch (up to 1000 bytes, line breaks preserved). It is returned as `details` in task JSON and rendered as indented lines under the task in both Markdown views. Existing tasks without the field simply report no details:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"details":"Llamar a la tienda antes de las 18:00"}' \
+  http://localhost:8982/v1/todos/tasks/<id>
+```
 
 Mark it done:
 
@@ -246,7 +254,7 @@ Writes require `API_KEYS`. If auth is disabled, write endpoints return `403` unl
 #### Behavior
 
 - **Persistence:** tasks live in `TODO_FILE` with `schema_version: 1`. Writes are atomic and a `.bak` copy is kept; if a save fails, the stored tasks are left unchanged. Tasks survive restarts, and only one server instance should write the file.
-- **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title and tag limits are listed in [Configuration](#configuration). Invalid input returns `400 invalid_request` with a `field` when applicable.
+- **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title, tag and details limits are listed in [Configuration](#configuration). Invalid input returns `400 invalid_request` with a `field` when applicable. Tasks saved by older versions load without a `details` key; the store schema stays at version 1.
 - **State:** completing a task sets `done_at`; reopening it clears `done_at`. Every change updates `updated_at` and increments `revision`; the `ETag` on task responses reflects that revision but is informational only.
 - **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered.
 - **Truncation:** when a response exceeds the size limits in [Configuration](#configuration), the JSON index is trimmed from the tail and reports `truncated: true`; the Markdown view is shortened and includes a visible `> Lista truncada.` note.
