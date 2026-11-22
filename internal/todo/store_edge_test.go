@@ -44,6 +44,35 @@ func TestNewStoreValidation(t *testing.T) {
 	}
 }
 
+func TestStoreDetailsBackwardCompatibility(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "todos.json")
+	raw := `{"schema_version":1,"updated_at":"2026-11-22T10:00:00Z","tasks":[{"id":"old1","title":"Old task","tags":["casa"],"done":false,"created_at":"2026-11-22T10:00:00Z","updated_at":"2026-11-22T10:00:00Z","revision":1}]}`
+	if err := os.WriteFile(file, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	st, err := NewStore(file, 10)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	old, ok := st.Get("old1")
+	if !ok || old.Details != "" {
+		t.Fatalf("legacy task details = %q, want empty", old.Details)
+	}
+
+	newTask := Task{ID: "new1", Title: "New", Tags: []string{}, Details: "line one\nline two", CreatedAt: "2026-11-22T11:00:00Z", UpdatedAt: "2026-11-22T11:00:00Z", Revision: 1}
+	if _, err := st.Create(newTask); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	reloaded, err := NewStore(file, 10)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	got, ok := reloaded.Get("new1")
+	if !ok || got.Details != newTask.Details {
+		t.Fatalf("reloaded details = %q, want %q", got.Details, newTask.Details)
+	}
+}
+
 func TestNewStoreInvalidSchema(t *testing.T) {
 	file := filepath.Join(t.TempDir(), "todos.json")
 	writeStoreFile(t, file, storeFile{SchemaVersion: 2})

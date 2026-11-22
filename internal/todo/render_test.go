@@ -247,3 +247,27 @@ func TestRenderFlatEmpty(t *testing.T) {
 		t.Fatalf("renderFlat = %q", b.String())
 	}
 }
+
+func TestRenderMarkdownDetails(t *testing.T) {
+	tasks := []Task{
+		{ID: "1", Title: "Comprar leche", Tags: []string{"casa"}, Details: "Llamar a la tienda\nUsar #cupón *hoy*", CreatedAt: "2026-11-22T10:00:00Z", UpdatedAt: "2026-11-22T10:00:00Z", Revision: 1},
+		{ID: "2", Title: "Pagar", Details: "Sin etiqueta", CreatedAt: "2026-11-22T11:00:00Z", UpdatedAt: "2026-11-22T11:00:00Z", Revision: 1},
+	}
+	md := RenderMarkdown(tasks, RenderOptions{
+		Filter:      Filter{Status: "all"},
+		Counts:      ComputeCounts(tasks),
+		GeneratedAt: "2026-11-22 15:00",
+	})
+	if !strings.Contains(md, "- [ ] Comprar leche\n  Llamar a la tienda\n  Usar \\#cupón \\*hoy\\*\n") {
+		t.Fatalf("grouped details missing or wrongly escaped: %s", md)
+	}
+
+	flat := RenderMarkdown(tasks, RenderOptions{
+		Filter:      Filter{Tag: "casa", Status: "all"},
+		Counts:      ComputeCounts(tasks),
+		GeneratedAt: "2026-11-22 15:00",
+	})
+	if !strings.Contains(flat, "- [ ] Comprar leche\n  Llamar a la tienda\n") {
+		t.Fatalf("flat details missing: %s", flat)
+	}
+}

@@ -321,6 +321,60 @@ func TestTodoCRUD(t *testing.T) {
 	}
 }
 
+func TestTodoDetailsRoundTrip(t *testing.T) {
+	h := newTodoTestHandler(t, true)
+	mux := todoTestMux(h)
+
+	create := httptest.NewRequest(http.MethodPost, "/v1/todos/tasks",
+		strings.NewReader(`{"text":"Comprar pan #casa","details":"primera\r\nsegunda"}`))
+	create.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+	mux.ServeHTTP(rr, create)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var created todo.Task
+	if err := json.NewDecoder(rr.Body).Decode(&created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if created.Details != "primera\nsegunda" {
+		t.Fatalf("create details = %q", created.Details)
+	}
+	id := created.ID
+
+	patch := httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+id,
+		strings.NewReader(`{"details":"nueva nota"}`))
+	patch.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, patch)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("patch status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+	var updated todo.Task
+	if err := json.NewDecoder(rr.Body).Decode(&updated); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if updated.Details != "nueva nota" || updated.Title != created.Title || updated.Revision <= created.Revision {
+		t.Fatalf("updated = %+v", updated)
+	}
+
+	tooLong := `{"details":"` + strings.Repeat("x", todo.MaxDetailsBytes+1) + `"}`
+	patch = httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+id, strings.NewReader(tooLong))
+	patch.Header.Set("Content-Type", "application/json")
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, patch)
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"details"`) {
+		t.Fatalf("too long details: status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+
+	md := httptest.NewRequest(http.MethodGet, "/v1/todos.md?status=all", nil)
+	rr = httptest.NewRecorder()
+	mux.ServeHTTP(rr, md)
+	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), "  nueva nota\n") {
+		t.Fatalf("markdown status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
 func TestTodoWritesForbidden(t *testing.T) {
 	h := newTodoTestHandler(t, false)
 	mux := todoTestMux(h)

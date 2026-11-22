@@ -1,6 +1,7 @@
 package todo
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -276,6 +277,21 @@ func TestNormalizeTags(t *testing.T) {
 	}
 	if _, err := NormalizeTags([]string{strings.Repeat("a", MaxTagLength+1)}); err == nil {
 		t.Fatal("expected error for too long tag")
+	}
+}
+
+func TestNormalizeAndValidateDetails(t *testing.T) {
+	got := NormalizeDetails("primera\r\nsegunda\r\n   ")
+	if got != "primera\nsegunda" {
+		t.Fatalf("NormalizeDetails = %q", got)
+	}
+	if err := ValidateDetails(strings.Repeat("x", MaxDetailsBytes)); err != nil {
+		t.Fatalf("expected details at the limit to be valid: %v", err)
+	}
+	err := ValidateDetails(strings.Repeat("x", MaxDetailsBytes+1))
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Field != "details" {
+		t.Fatalf("expected field=details error, got %v", err)
 	}
 }
 
