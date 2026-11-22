@@ -204,6 +204,8 @@ Public by default. Set `PROTECT_HEALTH=true` to require the same bearer API key 
 
 The todo module lives under `/v1/todos*`. All endpoints accept the same bearer key as the rest of `/v1`.
 
+The canonical contract for schemas, error codes and header semantics is [`openapi.yaml`](./openapi.yaml): see the `/todos*` paths and the `TodoTask`, `TodoIndexResponse`, `TodoTagsResponse`, `CreateTodoRequest`, `UpdateTodoRequest` and `ErrorResponse` components. It also contains worked examples of the generated Markdown and of each todo error response.
+
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/v1/todos?tag=&status=` | JSON index with counts and tag counters |
@@ -240,6 +242,14 @@ Ordering is deterministic: open tasks first, grouped by primary tag alphabetical
 The Markdown is mutable, so clients must re-download it on refresh instead of applying the article "download only if missing" rule. Responses use `Cache-Control: no-store`.
 
 Writes require `API_KEYS`. If auth is disabled, write endpoints return `403` unless `TODO_ALLOW_INSECURE_WRITES=true`.
+
+#### Behavior
+
+- **Persistence:** tasks live in `TODO_FILE` with `schema_version: 1`. Writes are atomic and a `.bak` copy is kept; if a save fails, the stored tasks are left unchanged. Tasks survive restarts, and only one server instance should write the file.
+- **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title and tag limits are listed in [Configuration](#configuration). Invalid input returns `400 invalid_request` with a `field` when applicable.
+- **State:** completing a task sets `done_at`; reopening it clears `done_at`. Every change updates `updated_at` and increments `revision`; the `ETag` on task responses reflects that revision but is informational only.
+- **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered.
+- **Truncation:** when a response exceeds the size limits in [Configuration](#configuration), the JSON index is trimmed from the tail and reports `truncated: true`; the Markdown view is shortened and includes a visible `> Lista truncada.` note.
 
 ## Content status
 
@@ -283,7 +293,7 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 
 ## Behavior and limitations
 
-- **No persistence (HN):** snapshots live in memory and are lost on restart. Todo tasks are persisted separately in `TODO_FILE`.
+- **No persistence (HN):** snapshots live in memory and are lost on restart. Todo tasks are persisted separately (see [Todos](#todos)).
 - **Warm-up:** until the first ready snapshot exists, both API endpoints return `503`.
 - **Partial failures:** individual item failures do not fail the whole snapshot.
 - **Retention:** while an item remains in the top 20, its last successful article body is reused if a refresh fails. The article header is re-rendered with current metadata.
@@ -293,10 +303,7 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 - **Third-party dependencies:** relies on the Hacker News Firebase API and external websites; availability, rate limiting, blocking, and content quality can affect results.
 - **Extraction quality:** readability/Markdown conversion quality varies by source page.
 - **Authentication:** optional bearer auth when `API_KEYS` is set. Use HTTPS in production.
-- **Todo persistence:** tasks survive restarts; writes are atomic and a `.bak` copy is kept. Only one server instance should write the file.
-- **Todo tags:** flat, lowercase, ASCII (`[a-z0-9][a-z0-9_-]{0,31}`); `#café` is kept as plain text, not a tag.
-- **Todo refresh:** the Markdown views change over time; clients must re-download them instead of caching them like HN articles.
-- **Todo writes:** disabled with `403` when `API_KEYS` is unset unless `TODO_ALLOW_INSECURE_WRITES=true`.
+- **Todo module:** persistence, validation, truncation, refresh and write permissions are described in [Todos](#todos).
 
 ## Development
 
