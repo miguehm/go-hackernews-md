@@ -92,7 +92,22 @@ func writeTodoJSON(w http.ResponseWriter, status int, data []byte) {
 	_, _ = w.Write(data)
 }
 
-func parseTodoFilter(r *http.Request) todo.Filter {
+func parseDueDays(r *http.Request) (int, error) {
+	values, ok := r.URL.Query()["due_days"]
+	if !ok || len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+		return 0, nil
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(values[0]))
+	if err != nil || parsed < 1 || parsed > todo.MaxDueDays {
+		return 0, &todo.ValidationError{
+			Field:   "due_days",
+			Message: fmt.Sprintf("due_days must be between 1 and %d", todo.MaxDueDays),
+		}
+	}
+	return parsed, nil
+}
+
+func parseTodoFilter(r *http.Request) (todo.Filter, error) {
 	var tag, status string
 	if values, ok := r.URL.Query()["tag"]; ok && len(values) > 0 {
 		tag = values[0]
@@ -100,7 +115,11 @@ func parseTodoFilter(r *http.Request) todo.Filter {
 	if values, ok := r.URL.Query()["status"]; ok && len(values) > 0 {
 		status = values[0]
 	}
-	return todo.Filter{Tag: tag, Status: status}.Normalized()
+	days, err := parseDueDays(r)
+	if err != nil {
+		return todo.Filter{}, err
+	}
+	return todo.Filter{Tag: tag, Status: status, DueDays: days}.Normalized(), nil
 }
 
 func parseTodoTaskID(raw string) (string, bool) {
@@ -217,7 +236,11 @@ func (h *TodoHandler) serveMarkdown(w http.ResponseWriter, r *http.Request, path
 		writeTodoMethodNotAllowed(w, "GET, HEAD")
 		return
 	}
-	filter := parseTodoFilter(r)
+	filter, err := parseTodoFilter(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	if pathTag != "" {
 		filter.Tag = pathTag
 	}
@@ -227,7 +250,7 @@ func (h *TodoHandler) serveMarkdown(w http.ResponseWriter, r *http.Request, path
 	}
 
 	tasks := h.store.Snapshot()
-	counts := todo.ComputeCounts(tasks)
+	counts := todo.ComputeCountsWith(tasks, todo.CountOptions{DueDays: filter.DueDays})
 	markdown, _ := h.renderMarkdown(tasks, filter, counts)
 	h.writeMarkdown(w, r, markdown, filename)
 }
@@ -240,18 +263,22 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter := parseTodoFilter(r)
+	filter, err := parseTodoFilter(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	if !h.validateFilter(w, filter) {
 		return
 	}
 	tasks := h.store.Snapshot()
-	tagCounts, counts, _ := todo.ComputeTagCounts(tasks)
+	tagCounts, counts, _ := todo.ComputeTagCountsWith(tasks, todo.CountOptions{DueDays: filter.DueDays})
 	items := todo.FilterTasks(tasks, filter)
 	if items == nil {
 		items = []todo.Task{}
 	}
 
-	responseFilter := todoFilterJSON{Status: filter.Status}
+	responseFilter := todoFilterJSON{Status: filter.Status, DueDays: filter.DueDays}
 	if filter.Tag != "" {
 		value := filter.Tag
 		responseFilter.Tag = &value
@@ -294,8 +321,9 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 }
 
 type todoFilterJSON struct {
-	Tag    *string `json:"tag"`
-	Status string  `json:"status"`
+	Tag     *string `json:"tag"`
+	Status  string  `json:"status"`
+	DueDays int     `json:"due_days,omitempty"`
 }
 
 func (h *TodoHandler) Markdown(w http.ResponseWriter, r *http.Request) {
@@ -318,8 +346,13 @@ func (h *TodoHandler) Tags(w http.ResponseWriter, r *http.Request) {
 		writeTodoMethodNotAllowed(w, http.MethodGet)
 		return
 	}
+	days, err := parseDueDays(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	tasks := h.store.Snapshot()
-	tagCounts, counts, untagged := todo.ComputeTagCounts(tasks)
+	tagCounts, counts, untagged := todo.ComputeTagCountsWith(tasks, todo.CountOptions{DueDays: days})
 	resp := struct {
 		SchemaVersion int             `json:"schema_version"`
 		GeneratedAt   string          `json:"generated_at"`
@@ -456,6 +489,7 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		Text    string   `json:"text"`
 		Tags    []string `json:"tags"`
 		Details string   `json:"details"`
+		DueDate *string  `json:"due_date"`
 		Done    bool     `json:"done"`
 	}
 	if !h.decodeJSON(w, r, &req) {
@@ -472,6 +506,11 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		writeTodoValidationError(w, err)
 		return
 	}
+	dueDate, err := todo.NormalizeDueDate(req.DueDate)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	id, err := todo.NewID()
 	if err != nil {
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to generate task id", "", "")
@@ -483,6 +522,7 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		Title:     title,
 		Tags:      tags,
 		Details:   details,
+		DueDate:   dueDate,
 		Done:      req.Done,
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -568,15 +608,16 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Text    *string   `json:"text"`
-		Tags    *[]string `json:"tags"`
-		Details *string   `json:"details"`
-		Done    *bool     `json:"done"`
+		Text    *string         `json:"text"`
+		Tags    *[]string       `json:"tags"`
+		Details *string         `json:"details"`
+		DueDate json.RawMessage `json:"due_date"`
+		Done    *bool           `json:"done"`
 	}
 	if !h.decodeJSON(w, r, &req) {
 		return
 	}
-	if req.Text == nil && req.Tags == nil && req.Details == nil && req.Done == nil {
+	if req.Text == nil && req.Tags == nil && req.Details == nil && req.DueDate == nil && req.Done == nil {
 		writeTodoError(w, http.StatusBadRequest, "invalid_request", "at least one field is required", "body", "")
 		return
 	}
@@ -611,6 +652,17 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 				return err
 			}
 			task.Details = details
+		}
+		if req.DueDate != nil {
+			var value *string
+			if err := json.Unmarshal(req.DueDate, &value); err != nil {
+				return &todo.ValidationError{Field: "due_date", Message: "due_date must be a date string or null"}
+			}
+			dueDate, err := todo.NormalizeDueDate(value)
+			if err != nil {
+				return err
+			}
+			task.DueDate = dueDate
 		}
 		if req.Done != nil {
 			if *req.Done != task.Done {
