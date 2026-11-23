@@ -545,6 +545,18 @@ func (h *TodoHandler) GetTask(w http.ResponseWriter, r *http.Request) {
 	writeTodoJSON(w, http.StatusOK, data)
 }
 
+// mergeTextTags folds hashtags parsed from a PATCH text into the task's existing
+// tags. Stored titles have their hashtags stripped, so a text that contains no
+// hashtags must leave the tag list completely untouched. When new hashtags are
+// present they are merged (deduplicated and normalized) with the existing tags;
+// an explicit `tags` field bypasses this helper and replaces the list outright.
+func mergeTextTags(existing, parsed []string) ([]string, error) {
+	if len(parsed) == 0 {
+		return existing, nil
+	}
+	return todo.NormalizeTags(append(append([]string(nil), existing...), parsed...))
+}
+
 func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	if !h.requireWrites(w) {
 		return
@@ -571,12 +583,20 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := h.store.Update(id, func(task *todo.Task) error {
 		if req.Text != nil {
-			title, tags, err := todo.ParseText(*req.Text, nil)
+			title, parsedTags, err := todo.ParseText(*req.Text, nil)
 			if err != nil {
 				return err
 			}
 			task.Title = title
-			task.Tags = tags
+			// `text` updates the title only: on its own it never replaces tags.
+			// Explicit `tags` (handled below) still takes priority.
+			if req.Tags == nil {
+				tags, err := mergeTextTags(task.Tags, parsedTags)
+				if err != nil {
+					return err
+				}
+				task.Tags = tags
+			}
 		}
 		if req.Tags != nil {
 			tags, err := todo.NormalizeTags(*req.Tags)

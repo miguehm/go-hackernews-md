@@ -479,3 +479,100 @@ func TestTodoNotFound(t *testing.T) {
 		t.Fatalf("status = %d", rr.Code)
 	}
 }
+
+func TestTodoPatchTagSemantics(t *testing.T) {
+	tests := []struct {
+		name        string
+		patch       string
+		wantTitle   string
+		wantTags    []string
+		wantDetails string
+	}{
+		{
+			name:        "details only keeps title and tags",
+			patch:       `{"details":""}`,
+			wantTitle:   "Comprar leche",
+			wantTags:    []string{"casa"},
+			wantDetails: "",
+		},
+		{
+			name:        "text without hashtags keeps tags",
+			patch:       `{"text":"Nuevo titulo"}`,
+			wantTitle:   "Nuevo titulo",
+			wantTags:    []string{"casa"},
+			wantDetails: "x",
+		},
+		{
+			name:        "text hashtags merge with existing tags",
+			patch:       `{"text":"Nuevo titulo #urgente"}`,
+			wantTitle:   "Nuevo titulo",
+			wantTags:    []string{"casa", "urgente"},
+			wantDetails: "x",
+		},
+		{
+			name:        "explicit empty tags clears tags",
+			patch:       `{"tags":[]}`,
+			wantTitle:   "Comprar leche",
+			wantTags:    []string{},
+			wantDetails: "x",
+		},
+		{
+			name:        "explicit tags take priority over text hashtags",
+			patch:       `{"text":"Nuevo titulo #urgente","tags":["trabajo"]}`,
+			wantTitle:   "Nuevo titulo",
+			wantTags:    []string{"trabajo"},
+			wantDetails: "x",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := newTodoTestHandler(t, true)
+			mux := todoTestMux(h)
+
+			createReq := httptest.NewRequest(http.MethodPost, "/v1/todos/tasks",
+				strings.NewReader(`{"text":"Comprar leche #casa","details":"x"}`))
+			createReq.Header.Set("Content-Type", "application/json")
+			createRR := httptest.NewRecorder()
+			mux.ServeHTTP(createRR, createReq)
+			if createRR.Code != http.StatusCreated {
+				t.Fatalf("create status = %d, body = %s", createRR.Code, createRR.Body.String())
+			}
+			var created todo.Task
+			if err := json.NewDecoder(createRR.Body).Decode(&created); err != nil {
+				t.Fatalf("decode create: %v", err)
+			}
+			if created.Title != "Comprar leche" || strings.Join(created.Tags, ",") != "casa" || created.Revision != 1 {
+				t.Fatalf("created = %+v", created)
+			}
+
+			patchReq := httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+created.ID, strings.NewReader(tt.patch))
+			patchReq.Header.Set("Content-Type", "application/json")
+			patchRR := httptest.NewRecorder()
+			mux.ServeHTTP(patchRR, patchReq)
+			if patchRR.Code != http.StatusOK {
+				t.Fatalf("patch status = %d, body = %s", patchRR.Code, patchRR.Body.String())
+			}
+			var updated todo.Task
+			if err := json.NewDecoder(patchRR.Body).Decode(&updated); err != nil {
+				t.Fatalf("decode patch: %v", err)
+			}
+			if updated.ID != created.ID || updated.Revision != created.Revision+1 {
+				t.Fatalf("revision/id = %d/%q, want %d/%q", updated.Revision, updated.ID, created.Revision+1, created.ID)
+			}
+			if updated.Title != tt.wantTitle {
+				t.Fatalf("title = %q, want %q", updated.Title, tt.wantTitle)
+			}
+			if strings.Join(updated.Tags, ",") != strings.Join(tt.wantTags, ",") {
+				t.Fatalf("tags = %v, want %v", updated.Tags, tt.wantTags)
+			}
+			if updated.Details != tt.wantDetails || updated.Done || updated.DoneAt != nil || updated.CreatedAt != created.CreatedAt {
+				t.Fatalf("other fields = %+v (created %+v)", updated, created)
+			}
+			stored, ok := h.store.Get(created.ID)
+			if !ok || stored.Title != updated.Title || strings.Join(stored.Tags, ",") != strings.Join(updated.Tags, ",") || stored.Revision != updated.Revision {
+				t.Fatalf("stored = %+v, updated = %+v", stored, updated)
+			}
+		})
+	}
+}

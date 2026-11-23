@@ -291,7 +291,7 @@ func TestTodoUpdateTaskFields(t *testing.T) {
 		t.Fatalf("text patch status = %d, body = %s", rr.Code, rr.Body.String())
 	}
 	task, ok := h.store.Get("a1")
-	if !ok || task.Title != "Nueva tarea" || strings.Join(task.Tags, ",") != "urgente" {
+	if !ok || task.Title != "Nueva tarea" || strings.Join(task.Tags, ",") != "casa,trabajo,urgente" {
 		t.Fatalf("task = %+v", task)
 	}
 
