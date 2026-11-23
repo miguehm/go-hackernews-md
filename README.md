@@ -20,7 +20,7 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 - In-memory, thread-safe snapshot store
 - Optional bearer API key authentication
 - Index capped at 128 KiB, articles capped at 512 KiB
-- Todo module: JSON + Markdown views, flat `#tags`, deterministic ordering
+- Todo module: JSON + Markdown views, flat `#tags`, optional due dates (`due_soon`/`overdue` filters), deterministic ordering
 - Persistent, atomic JSON store for tasks with `.bak` fallback
 
 ## Architecture
@@ -208,25 +208,27 @@ The canonical contract for schemas, error codes and header semantics is [`openap
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `GET` | `/v1/todos?tag=&status=` | JSON index with counts and tag counters |
-| `GET\|HEAD` | `/v1/todos.md?tag=&status=` | Full Markdown list |
-| `GET` | `/v1/todos/tags` | Tag counters and untagged count |
-| `GET\|HEAD` | `/v1/todos/tags/{tag}.md?status=` | Flat Markdown for one tag |
+| `GET` | `/v1/todos?tag=&status=&due_days=` | JSON index with counts and tag counters |
+| `GET\|HEAD` | `/v1/todos.md?tag=&status=&due_days=` | Full Markdown list |
+| `GET` | `/v1/todos/tags?due_days=` | Tag counters and untagged count |
+| `GET\|HEAD` | `/v1/todos/tags/{tag}.md?status=&due_days=` | Flat Markdown for one tag |
 | `GET` | `/v1/todos/top?tags=true` | KindleHome-compatible index with `type: "todo"` items |
 | `POST` | `/v1/todos/tasks` | Create task |
 | `GET` | `/v1/todos/tasks/{id}` | Get task |
-| `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/details/state |
+| `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/details/due date/state |
 | `DELETE` | `/v1/todos/tasks/{id}` | Delete task (idempotent `204`) |
 
-`status` is `open` (default), `done` or `all`. `tag` matches any of a task's tags.
+`status` is `open` (default), `done`, `all`, `due_soon` or `overdue`. `tag` matches any of a task's tags. `due_days` (1–30, default 3) sets the "due soon" horizon; out-of-range values return `400` with `field: due_days`. Both `due_soon` and `overdue` apply only to open tasks: `overdue` means the deadline is before today (UTC), and `due_soon` means today through today + `due_days`, inclusive. Dates are compared as `YYYY-MM-DD` strings so no timezone conversion is needed for the task itself.
 
 Create a task by typing hashtags in `text`:
 
 ```bash
 curl -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
-  -d '{"text":"Comprar leche #casa #urgente"}' \
+  -d '{"text":"Comprar leche #casa #urgente","due_date":"2026-11-30"}' \
   http://localhost:8982/v1/todos/tasks
 ```
+
+`due_date` is optional and must be a valid `YYYY-MM-DD` date. It is returned as `due_date` in task JSON (omitted when absent) and rendered as `(vence 2026-11-30)` in the Markdown. Clear it with `{"due_date":null}` or `{"due_date":""}` on PATCH. Invalid dates return `400 invalid_request` with `field: due_date`.
 
 The server extracts `#casa` and `#urgente`, normalizes them to lowercase and removes them from the stored title. Multiple tags are supported; the first one is the primary tag used for grouping in the full Markdown view. A filter by a non-primary tag still finds the task.
 
@@ -256,7 +258,7 @@ curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/jso
   -d '{"done":true}' http://localhost:8982/v1/todos/tasks/<id>
 ```
 
-Ordering is deterministic: open tasks first, grouped by primary tag alphabetically, untagged last, oldest first within each group; done tasks appear under `## Hechas` sorted by completion time. There is no manual reordering.
+Ordering is deterministic: open tasks with a deadline come first, sorted by date ascending (overdue first), followed by open tasks without a deadline grouped by primary tag alphabetically, untagged last, oldest first within each group; done tasks appear under `## Hechas` sorted by completion time. There is no manual reordering.
 
 The Markdown is mutable, so clients must re-download it on refresh instead of applying the article "download only if missing" rule. Responses use `Cache-Control: no-store`.
 
@@ -265,9 +267,9 @@ Writes require `API_KEYS`. If auth is disabled, write endpoints return `403` unl
 #### Behavior
 
 - **Persistence:** tasks live in `TODO_FILE` with `schema_version: 1`. Writes are atomic and a `.bak` copy is kept; if a save fails, the stored tasks are left unchanged. Tasks survive restarts, and only one server instance should write the file.
-- **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title, tag and details limits are listed in [Configuration](#configuration). Invalid input returns `400 invalid_request` with a `field` when applicable. Tasks saved by older versions load without a `details` key; the store schema stays at version 1.
+- **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title, tag and details limits are listed in [Configuration](#configuration). `due_date` must be `YYYY-MM-DD`; invalid values return `400 invalid_request` with `field: due_date`. Tasks saved by older versions load without `details` or `due_date`; the store schema stays at version 1.
 - **State:** completing a task sets `done_at`; reopening it clears `done_at`. Every change updates `updated_at` and increments `revision`; the `ETag` on task responses reflects that revision but is informational only.
-- **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered.
+- **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered. They also include `due_soon` and `overdue`, computed with the requested `due_days` (default 3) against today in UTC.
 - **Truncation:** when a response exceeds the size limits in [Configuration](#configuration), the JSON index is trimmed from the tail and reports `truncated: true`; the Markdown view is shortened and includes a visible `> Lista truncada.` note.
 
 ## Content status

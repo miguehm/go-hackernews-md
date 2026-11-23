@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: hnmd API — KindleHome (file-based)
-  version: 1.3.0
+  version: 1.4.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -30,6 +30,17 @@ info:
     - Multitag plano: hasta 10 tags por tarea; el primero es el primario.
     - `details` es una nota opcional (≤1000 bytes) que se renderiza indentada
       bajo la tarea en el Markdown; los clientes antiguos la ignoran.
+    - `due_date` es una fecha límite opcional en formato `YYYY-MM-DD` (UTC, sin
+      hora). `null` o ausente significa "sin fecha límite". Las fechas se
+      comparan como cadenas ISO, de modo que `overdue` es `< hoy` y `due_soon`
+      está entre `hoy` y `hoy + due_days` (inclusive). Los clientes antiguos
+      ignoran el campo.
+    - Los estados `due_soon` y `overdue` filtran solo tareas abiertas. El plazo
+      de "por vencer" se controla con `due_days` (1–30, default 3) y también
+      afecta a los contadores `due_soon`/`overdue`.
+    - Las tareas abiertas con fecha límite se ordenan primero por fecha
+      ascendente (vencidas primero); las que no tienen fecha conservan el orden
+      por tag primario, creación e id.
     - `GET /todos` devuelve JSON; `GET /todos.md` devuelve Markdown.
     - El Markdown de tareas es mutable: el cliente debe re-descargarlo en
       cada refresco; no aplicar la política de "solo si falta el archivo local".
@@ -261,6 +272,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/TagQuery'
         - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           description: Índice obtenido
@@ -281,19 +293,26 @@ paths:
                     filter:
                       tag: null
                       status: open
+                      due_days: 3
                     counts:
                       open: 8
                       done: 2
                       total: 10
+                      due_soon: 3
+                      overdue: 1
                     tags:
                       - tag: casa
                         open: 3
                         done: 1
                         total: 4
+                        due_soon: 2
+                        overdue: 1
                       - tag: trabajo
                         open: 2
                         done: 1
                         total: 3
+                        due_soon: 1
+                        overdue: 0
                     returned_count: 8
                     truncated: false
                     items:
@@ -301,6 +320,7 @@ paths:
                         title: Comprar leche
                         tags: [casa, urgente]
                         details: 'Llamar a la tienda antes de las 18:00'
+                        due_date: '2026-11-30'
                         done: false
                         created_at: '2026-11-22T13:00:00Z'
                         updated_at: '2026-11-22T13:00:00Z'
@@ -323,6 +343,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/TagQuery'
         - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           $ref: '#/components/responses/TodosMarkdown'
@@ -337,6 +358,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/TagQuery'
         - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           $ref: '#/components/responses/TodosMarkdownHead'
@@ -350,6 +372,8 @@ paths:
       tags: [todos]
       operationId: listTodoTags
       summary: Tags y contadores globales
+      parameters:
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           description: Tags obtenidos
@@ -371,19 +395,27 @@ paths:
                       open: 8
                       done: 2
                       total: 10
+                      due_soon: 3
+                      overdue: 1
                     tags:
                       - tag: casa
                         open: 3
                         done: 1
                         total: 4
+                        due_soon: 2
+                        overdue: 1
                       - tag: trabajo
                         open: 2
                         done: 1
                         total: 3
+                        due_soon: 1
+                        overdue: 0
                     untagged:
                       open: 3
                       done: 0
                       total: 3
+                      due_soon: 0
+                      overdue: 0
         '401':
           $ref: '#/components/responses/Unauthorized'
         default:
@@ -401,6 +433,7 @@ paths:
         Si el tag no existe, devuelve 200 con un listado vacío.
       parameters:
         - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           $ref: '#/components/responses/TodosTagMarkdown'
@@ -414,6 +447,7 @@ paths:
       summary: Consulta disponibilidad y tamaño sin descargar el cuerpo
       parameters:
         - $ref: '#/components/parameters/StatusQuery'
+        - $ref: '#/components/parameters/DueDaysQuery'
       responses:
         '200':
           $ref: '#/components/responses/TodosTagMarkdownHead'
@@ -711,9 +745,24 @@ components:
       required: false
       schema:
         type: string
-        enum: [open, done, all]
+        enum: [open, done, all, due_soon, overdue]
         default: open
-      description: Estado a incluir.
+      description: |
+        Estado a incluir. `due_soon` (fecha entre hoy y hoy + `due_days`) y
+        `overdue` (fecha anterior a hoy) solo incluyen tareas abiertas. `all`
+        incluye todas, abiertas y terminadas.
+    DueDaysQuery:
+      in: query
+      name: due_days
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 30
+        default: 3
+      description: |
+        Horizonte en días para el estado `due_soon` y para los contadores
+        `due_soon`. Valores fuera de 1–30 devuelven 400 con `field: due_days`.
     TagPath:
       in: path
       name: tag
@@ -880,7 +929,7 @@ components:
                 ## #casa
                 - [ ] Comprar leche #urgente
                   Llamar a la tienda antes de las 18:00
-                - [ ] Pagar alquiler
+                - [ ] Pagar alquiler (vence 2026-11-30)
 
                 ## #trabajo
                 - [ ] Enviar informe #urgente
@@ -1144,6 +1193,18 @@ components:
             renderiza como líneas indentadas bajo la tarea en el Markdown.
             Ausente o vacía en tareas creadas antes de este campo.
           example: 'Llamar a la tienda antes de las 18:00'
+        due_date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          nullable: true
+          description: |
+            Fecha límite opcional en `YYYY-MM-DD` (UTC, sin hora). `null` o
+            ausente significa que la tarea no tiene fecha límite. Se renderiza
+            como `(vence YYYY-MM-DD)` en el Markdown. Las tareas abiertas con
+            fecha se ordenan primero por fecha ascendente. Ausente en tareas
+            creadas antes de la versión 1.4.0.
+          example: '2026-11-30'
         done:
           type: boolean
         created_at:
@@ -1163,7 +1224,7 @@ components:
 
     TodoCounts:
       type: object
-      required: [open, done, total]
+      required: [open, done, total, due_soon, overdue]
       properties:
         open:
           type: integer
@@ -1174,10 +1235,20 @@ components:
         total:
           type: integer
           minimum: 0
+        due_soon:
+          type: integer
+          minimum: 0
+          description: |
+            Tareas abiertas con fecha entre hoy y hoy + `due_days` (inclusive).
+            No incluye las vencidas.
+        overdue:
+          type: integer
+          minimum: 0
+          description: Tareas abiertas con fecha anterior a hoy.
 
     TodoTagCount:
       type: object
-      required: [tag, open, done, total]
+      required: [tag, open, done, total, due_soon, overdue]
       properties:
         tag:
           type: string
@@ -1191,6 +1262,14 @@ components:
         total:
           type: integer
           minimum: 0
+        due_soon:
+          type: integer
+          minimum: 0
+          description: Abiertas con este tag que vencen en el plazo configurado.
+        overdue:
+          type: integer
+          minimum: 0
+          description: Abiertas con este tag cuya fecha es anterior a hoy.
 
     TodoIndexResponse:
       type: object
@@ -1219,7 +1298,12 @@ components:
               nullable: true
             status:
               type: string
-              enum: [open, done, all]
+              enum: [open, done, all, due_soon, overdue]
+            due_days:
+              type: integer
+              minimum: 1
+              maximum: 30
+              description: Horizonte efectivo usado para el estado y los contadores `due_soon`.
         counts:
           allOf:
             - $ref: '#/components/schemas/TodoCounts'
@@ -1289,6 +1373,15 @@ components:
           maxLength: 1000
           description: Nota opcional; los saltos de línea se preservan.
           example: 'Llamar a la tienda antes de las 18:00'
+        due_date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          nullable: true
+          description: |
+            Fecha límite opcional en `YYYY-MM-DD`. `null` o ausente = sin fecha
+            límite. Una fecha inválida devuelve 400 con `field: due_date`.
+          example: '2026-11-30'
         done:
           type: boolean
           default: false
@@ -1323,6 +1416,15 @@ components:
           type: string
           maxLength: 1000
           description: Si está presente, reemplaza la nota (cadena vacía la borra).
+        due_date:
+          type: string
+          format: date
+          pattern: '^\d{4}-\d{2}-\d{2}$'
+          nullable: true
+          description: |
+            Si está presente, reemplaza la fecha límite. `null` o `""` la borra.
+            Una fecha inválida devuelve 400 con `field: due_date`.
+          example: '2026-11-30'
         done:
           type: boolean
           description: Cambia el estado y actualiza `done_at`.
