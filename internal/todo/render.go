@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 type RenderOptions struct {
@@ -14,17 +15,46 @@ type RenderOptions struct {
 }
 
 func FilterTasks(tasks []Task, filter Filter) []Task {
+	return FilterTasksAt(tasks, filter, time.Now().UTC())
+}
+
+// FilterTasksAt is the deterministic form used by tests and by callers that
+// already computed "today" (for example the HTTP handler building counts).
+func FilterTasksAt(tasks []Task, filter Filter, now time.Time) []Task {
 	f := filter.Normalized()
+	now = now.UTC()
+	today := now.Format(DueDateLayout)
+	limit := now.AddDate(0, 0, f.DueDays).Format(DueDateLayout)
 	out := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
 		if f.Tag != "" && !containsTag(task.Tags, f.Tag) {
 			continue
 		}
-		if f.Status == "open" && task.Done {
-			continue
-		}
-		if f.Status == "done" && !task.Done {
-			continue
+		switch f.Status {
+		case "all":
+			// Every task, regardless of status.
+		case "done":
+			if !task.Done {
+				continue
+			}
+		case "due_soon", "overdue":
+			if task.Done {
+				continue
+			}
+			due, ok := DueDateOf(task)
+			if !ok {
+				continue
+			}
+			if f.Status == "overdue" && !isOverdue(due, today) {
+				continue
+			}
+			if f.Status == "due_soon" && !isDueSoon(due, today, limit) {
+				continue
+			}
+		default:
+			if task.Done {
+				continue
+			}
 		}
 		out = append(out, CloneTask(task))
 	}
@@ -39,6 +69,14 @@ func SortTasks(tasks []Task) []Task {
 			return !a.Done
 		}
 		if !a.Done {
+			da, aHasDue := DueDateOf(a)
+			db, bHasDue := DueDateOf(b)
+			if aHasDue != bHasDue {
+				return aHasDue
+			}
+			if aHasDue && da != db {
+				return da < db
+			}
 			ta, tb := primaryTag(a), primaryTag(b)
 			if ta == "" && tb != "" {
 				return false
@@ -162,6 +200,9 @@ func writeTask(b *strings.Builder, task Task, skipTag string) {
 			continue
 		}
 		fmt.Fprintf(b, " #%s", tag)
+	}
+	if due, ok := DueDateOf(task); ok {
+		fmt.Fprintf(b, " (vence %s)", due)
 	}
 	b.WriteString("\n")
 	if task.Details != "" {

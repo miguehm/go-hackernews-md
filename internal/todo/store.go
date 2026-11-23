@@ -85,6 +85,11 @@ func (s *Store) load() error {
 			return fmt.Errorf("task %s has invalid tags: %w", t.ID, err)
 		}
 		t.Tags = tags
+		dueDate, err := NormalizeDueDate(t.DueDate)
+		if err != nil {
+			return fmt.Errorf("task %s has invalid due_date: %w", t.ID, err)
+		}
+		t.DueDate = dueDate
 		if t.CreatedAt == "" {
 			t.CreatedAt = nowString()
 		}

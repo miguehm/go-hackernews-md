@@ -199,10 +199,12 @@ func TestFilterNormalized(t *testing.T) {
 		filter Filter
 		want   Filter
 	}{
-		{filter: Filter{Tag: "  CASA ", Status: "weird"}, want: Filter{Tag: "casa", Status: "open"}},
-		{filter: Filter{}, want: Filter{Status: "open"}},
-		{filter: Filter{Status: "done"}, want: Filter{Status: "done"}},
-		{filter: Filter{Status: "all"}, want: Filter{Status: "all"}},
+		{filter: Filter{Tag: "  CASA ", Status: "weird"}, want: Filter{Tag: "casa", Status: "open", DueDays: DefaultDueDays}},
+		{filter: Filter{}, want: Filter{Status: "open", DueDays: DefaultDueDays}},
+		{filter: Filter{Status: "done"}, want: Filter{Status: "done", DueDays: DefaultDueDays}},
+		{filter: Filter{Status: "all"}, want: Filter{Status: "all", DueDays: DefaultDueDays}},
+		{filter: Filter{Status: "due_soon", DueDays: 7}, want: Filter{Status: "due_soon", DueDays: 7}},
+		{filter: Filter{Status: "overdue"}, want: Filter{Status: "overdue", DueDays: DefaultDueDays}},
 	}
 	for _, tt := range tests {
 		if got := tt.filter.Normalized(); got != tt.want {

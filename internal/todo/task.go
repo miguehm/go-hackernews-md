@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -17,6 +18,11 @@ const (
 	MaxTextBytes    = 300
 	MaxTitleSize    = 200
 	MaxDetailsBytes = 1000
+
+	// DueDateLayout is the canonical, timezone-free wire format for deadlines.
+	DueDateLayout  = "2006-01-02"
+	DefaultDueDays = 3
+	MaxDueDays     = 30
 )
 
 var ErrNotFound = errors.New("task not found")
@@ -56,6 +62,7 @@ type Task struct {
 	Title     string   `json:"title"`
 	Tags      []string `json:"tags"`
 	Details   string   `json:"details,omitempty"`
+	DueDate   *string  `json:"due_date,omitempty"`
 	Done      bool     `json:"done"`
 	CreatedAt string   `json:"created_at"`
 	UpdatedAt string   `json:"updated_at"`
@@ -64,31 +71,100 @@ type Task struct {
 }
 
 type Counts struct {
-	Open  int `json:"open"`
-	Done  int `json:"done"`
-	Total int `json:"total"`
+	Open    int `json:"open"`
+	Done    int `json:"done"`
+	Total   int `json:"total"`
+	DueSoon int `json:"due_soon"`
+	Overdue int `json:"overdue"`
 }
 
 type TagCount struct {
-	Tag   string `json:"tag"`
-	Open  int    `json:"open"`
-	Done  int    `json:"done"`
-	Total int    `json:"total"`
+	Tag     string `json:"tag"`
+	Open    int    `json:"open"`
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	DueSoon int    `json:"due_soon"`
+	Overdue int    `json:"overdue"`
 }
 
 type Filter struct {
-	Tag    string
-	Status string
+	Tag     string
+	Status  string
+	DueDays int
+}
+
+// CountOptions controls the reference date and horizon used for the deadline
+// counters. A zero value means "now, with the default due-soon window".
+type CountOptions struct {
+	Now     time.Time
+	DueDays int
+}
+
+func (o CountOptions) normalized() CountOptions {
+	o.Now = o.Now.UTC()
+	if o.Now.IsZero() {
+		o.Now = time.Now().UTC()
+	}
+	if o.DueDays <= 0 {
+		o.DueDays = DefaultDueDays
+	}
+	return o
 }
 
 func (f Filter) Normalized() Filter {
 	f.Tag = strings.ToLower(strings.TrimSpace(f.Tag))
 	switch f.Status {
-	case "done", "all":
+	case "done", "all", "due_soon", "overdue":
 	default:
 		f.Status = "open"
 	}
+	if f.DueDays <= 0 {
+		f.DueDays = DefaultDueDays
+	}
 	return f
+}
+
+// NormalizeDueDate accepts only canonical YYYY-MM-DD dates. Both nil and an
+// empty string mean "no deadline"; callers can therefore use the same helper
+// for create, patch and legacy store records.
+func NormalizeDueDate(value *string) (*string, error) {
+	if value == nil {
+		return nil, nil
+	}
+	trimmed := strings.TrimSpace(*value)
+	if trimmed == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse(DueDateLayout, trimmed)
+	if err != nil || parsed.Format(DueDateLayout) != trimmed {
+		return nil, validationError("due_date", "due_date must be a valid YYYY-MM-DD date")
+	}
+	return &trimmed, nil
+}
+
+// DueDateOf exposes a stored deadline as a comparable ISO date string. Dates
+// are validated on write, so an invalid value is treated as "no deadline"
+// rather than crashing the readers.
+func DueDateOf(t Task) (string, bool) {
+	if t.DueDate == nil {
+		return "", false
+	}
+	value := *t.DueDate
+	if _, err := time.Parse(DueDateLayout, value); err != nil {
+		return "", false
+	}
+	return value, true
+}
+
+// isOverdue / isDueSoon compare ISO date strings lexicographically, which is
+// equivalent to comparing calendar dates and avoids timezone drift inside a
+// day. `today` and the horizon are always expressed in UTC.
+func isOverdue(due, today string) bool {
+	return due < today
+}
+
+func isDueSoon(due, today, limit string) bool {
+	return due >= today && due <= limit
 }
 
 func NormalizeTags(values []string) ([]string, error) {
@@ -192,6 +268,10 @@ func CloneTask(t Task) Task {
 		doneAt := *t.DoneAt
 		cloned.DoneAt = &doneAt
 	}
+	if t.DueDate != nil {
+		dueDate := *t.DueDate
+		cloned.DueDate = &dueDate
+	}
 	return cloned
 }
 
@@ -203,29 +283,68 @@ func CloneTasks(tasks []Task) []Task {
 	return out
 }
 
+// ComputeCounts keeps its original signature for callers that do not care
+// about deadlines (tests, Markdown truncation). Handlers use ComputeCountsWith
+// so the due-soon window matches the one requested by the client.
 func ComputeCounts(tasks []Task) Counts {
+	return ComputeCountsWith(tasks, CountOptions{})
+}
+
+func ComputeCountsWith(tasks []Task, options CountOptions) Counts {
+	opts := options.normalized()
+	today := opts.Now.Format(DueDateLayout)
+	limit := opts.Now.AddDate(0, 0, opts.DueDays).Format(DueDateLayout)
+
 	var out Counts
 	for _, t := range tasks {
 		out.Total++
 		if t.Done {
 			out.Done++
-		} else {
-			out.Open++
+			continue
+		}
+		out.Open++
+		if due, ok := DueDateOf(t); ok {
+			switch {
+			case isOverdue(due, today):
+				out.Overdue++
+			case isDueSoon(due, today, limit):
+				out.DueSoon++
+			}
 		}
 	}
 	return out
 }
 
 func ComputeTagCounts(tasks []Task) ([]TagCount, Counts, Counts) {
+	return ComputeTagCountsWith(tasks, CountOptions{})
+}
+
+func ComputeTagCountsWith(tasks []Task, options CountOptions) ([]TagCount, Counts, Counts) {
+	opts := options.normalized()
+	today := opts.Now.Format(DueDateLayout)
+	limit := opts.Now.AddDate(0, 0, opts.DueDays).Format(DueDateLayout)
+
 	byTag := make(map[string]*TagCount)
 	var untagged Counts
 
 	for _, t := range tasks {
+		due, hasDue := DueDateOf(t)
+		overdue := hasDue && isOverdue(due, today)
+		dueSoon := hasDue && isDueSoon(due, today, limit)
+
+		addDue := func(overdueField, dueSoonField *int) {
+			if overdue {
+				*overdueField++
+			} else if dueSoon {
+				*dueSoonField++
+			}
+		}
 		if len(t.Tags) == 0 {
 			if t.Done {
 				untagged.Done++
 			} else {
 				untagged.Open++
+				addDue(&untagged.Overdue, &untagged.DueSoon)
 			}
 			untagged.Total++
 			continue
@@ -240,6 +359,7 @@ func ComputeTagCounts(tasks []Task) ([]TagCount, Counts, Counts) {
 				entry.Done++
 			} else {
 				entry.Open++
+				addDue(&entry.Overdue, &entry.DueSoon)
 			}
 			entry.Total++
 		}
@@ -255,5 +375,5 @@ func ComputeTagCounts(tasks []Task) ([]TagCount, Counts, Counts) {
 	for _, name := range names {
 		out = append(out, *byTag[name])
 	}
-	return out, ComputeCounts(tasks), untagged
+	return out, ComputeCountsWith(tasks, options), untagged
 }
