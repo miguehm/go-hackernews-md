@@ -238,6 +238,17 @@ curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/jso
   http://localhost:8982/v1/todos/tasks/<id>
 ```
 
+On PATCH, `text` updates the title only: it never clears the existing tags (stored titles have their hashtags stripped). Hashtags in a patched `text` are merged with the current tags, lowercased and deduplicated. Only an explicit `tags` field replaces the list — and `"tags":[]` clears all tags:
+
+```bash
+curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"text":"Comprar leche entera #urgente"}' \
+  http://localhost:8982/v1/todos/tasks/<id>   # keeps #casa, adds #urgente
+
+curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+  -d '{"tags":[]}' http://localhost:8982/v1/todos/tasks/<id>   # clears all tags
+```
+
 Mark it done:
 
 ```bash

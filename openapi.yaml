@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: hnmd API — KindleHome (file-based)
-  version: 1.2.0
+  version: 1.3.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -602,8 +602,13 @@ paths:
       operationId: updateTodoTask
       summary: Actualizar tarea
       description: |
-        Al menos un campo. Si `text` está presente, se vuelve a parsear
-        título y tags. Si `tags` está presente, reemplaza la lista de tags.
+        Al menos un campo. Si `text` está presente, actualiza el título;
+        sus hashtags no reemplazan los tags existentes. Si `tags` está
+        ausente, los tags actuales se conservan y los hashtags nuevos de
+        `text` se fusionan con ellos (normalizados y sin duplicados).
+        Si `tags` está presente, reemplaza la lista de tags, incluso con
+        un array vacío (`[]`), que borra todos los tags; tiene prioridad
+        sobre los hashtags de `text`.
         Si `details` está presente, reemplaza la nota (vacía la borra).
         Si `done` está presente, cambia el estado y `done_at`.
       requestBody:
@@ -1297,14 +1302,20 @@ components:
           type: string
           minLength: 1
           maxLength: 300
-          description: Si está presente, se vuelve a parsear el título y los tags.
+          description: |
+            Si está presente, actualiza el título. Nunca borra los tags por sí
+            solo: si `tags` está ausente, los hashtags del texto se fusionan
+            con los tags existentes (normalizados y sin duplicados) y, si el
+            texto no tiene hashtags, los tags se conservan tal cual.
         tags:
           type: array
           maxItems: 10
           uniqueItems: true
           description: |
-            Si está presente, reemplaza la lista de tags. Tiene prioridad
-            sobre los tags parseados de `text`.
+            Si está presente, reemplaza la lista de tags, incluso con `[]`
+            (que borra todos los tags). Tiene prioridad sobre los hashtags de
+            `text`. Si está ausente, se conservan los tags existentes y se
+            fusionan los hashtags nuevos de `text`.
           items:
             type: string
             pattern: '^[a-z0-9][a-z0-9_-]{0,31}$'
