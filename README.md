@@ -22,6 +22,12 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 - Index capped at 128 KiB, articles capped at 512 KiB
 - Todo module: JSON + Markdown views, flat `#tags`, optional due dates (`due_soon`/`overdue` filters), deterministic ordering
 - Persistent, atomic JSON store for tasks with `.bak` fallback
+- Conditional reads (`If-None-Match` → `304`) and gzip for `/v1/top` and articles
+- Offset pagination for `/v1/top`, `/v1/todos` and `/v1/todos/tags`
+- Optimistic concurrency on task writes via mandatory `If-Match`
+- Idempotent task creation with a client-provided `id`
+- Configurable IANA timezone for due-date filtering and rendering
+- `/v1/status` endpoint for readiness and snapshot metadata
 
 ## Architecture
 
@@ -29,7 +35,7 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 2. `internal/service` fetches top story IDs and items from the Hacker News API and processes them concurrently.
 3. `internal/scraper` fetches and extracts article HTML; `internal/markdown` converts HTML to Markdown and renders the final article header.
 4. `internal/store` keeps one immutable snapshot containing the metadata index and article bodies.
-5. `internal/api` serves `/v1/top`, `/v1/articles/{itemId}.md`, the todo endpoints under `/v1/todos*`, the deprecated `/top` alias, and `/health` behavior from `main`.
+5. `internal/api` serves `/v1/status`, `/v1/top`, `/v1/articles/{itemId}.md`, the todo endpoints under `/v1/todos*`, the deprecated `/top` alias, and `/health` behavior from `main`.
 6. `internal/todo` parses `#tags`, persists tasks in a JSON file and renders the Markdown views.
 
 | Package | Responsibility |
@@ -80,6 +86,7 @@ Environment variables read at startup:
 | `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. |
 | `DATA_DIR` | `./data` | path | Directory for persistent data. Docker defaults to `/data`. |
 | `TODO_FILE` | `<DATA_DIR>/todos.json` | path | JSON file used by the todo store. A `.bak` copy is kept. |
+| `TODO_TIMEZONE` | `UTC` | IANA timezone | Default timezone for todo `due_soon`/`overdue`, counts and rendering. Can be overridden per request with `tz`. Invalid values fall back to UTC with a warning. |
 | `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. |
 | `TODO_ALLOW_INSECURE_WRITES` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | Allow todo writes when `API_KEYS` is unset. Off by default. |
 | `PUBLIC_BASE_URL` | _(empty)_ | URL | Optional external base URL used for absolute `hn_url` values in `/v1/todos/top`. |
@@ -111,6 +118,8 @@ Returns the metadata index. This endpoint never triggers scraping.
 Query parameters:
 
 - `limit` (integer, 1-30, default 20): maximum number of items. Invalid values are clamped: missing or non-numeric means 20, values below 1 become 1, values above 30 become 30.
+- `offset` (integer, >=0, default 0): first item index. Invalid or negative values become 0.
+- `If-None-Match` (header, optional): revalidate with the previous `ETag`; a match returns `304 Not Modified` with no body.
 
 Response fields:
 
@@ -118,11 +127,16 @@ Response fields:
 - `generated_at`: RFC3339 timestamp
 - `next_refresh_at`: RFC3339 timestamp or `null`
 - `refresh_interval_seconds`: integer or `null`
+- `offset`, `limit`: effective page values
 - `returned_count`: number of items in `items`
-- `truncated`: `true` when the tail was cut by `limit` or by the 128 KiB cap
+- `truncated`: `true` when the tail or page was cut by `limit` or by the 128 KiB cap
+- `has_more`: whether another page is available
+- `next_offset`: next `offset` to request when `has_more` is `true`, otherwise `null`
 - `items`: array of metadata items
 
 Because the server fetches 20 stories, `returned_count` is at most 20 even though `limit` accepts up to 30.
+
+Responses use weak `ETag` (`W/"..."`), `Last-Modified`, `Cache-Control: private, no-cache` and `Vary: Accept-Encoding`. Gzip is applied when the client sends `Accept-Encoding: gzip`.
 
 Example:
 
@@ -137,8 +151,12 @@ curl -H "Authorization: Bearer <key>" \
   "generated_at": "2026-11-16T12:00:00Z",
   "next_refresh_at": "2026-11-16T12:30:00Z",
   "refresh_interval_seconds": 1800,
+  "offset": 0,
+  "limit": 20,
   "returned_count": 1,
   "truncated": false,
+  "has_more": false,
+  "next_offset": null,
   "items": [
     {
       "id": "42123456",
@@ -171,7 +189,9 @@ Returns the article as a Markdown file. `HEAD` returns the same status and heade
 - `Content-Type: text/markdown; charset=utf-8`
 - `Content-Length`: exact byte count, at most 512 KiB
 - `Content-Disposition: inline; filename="<id>-<slug>.md"`
-- `ETag` and `Last-Modified`: informational only; conditional requests are not supported
+- `ETag`: weak validator (`W/"..."`); send it as `If-None-Match` to get `304 Not Modified`
+- `Last-Modified`: informational; `Cache-Control: private, no-cache`
+- `Vary: Accept-Encoding`; gzip is applied when the client accepts it
 - Body: visible Markdown header followed by the article body, or header-only for empty/deleted items
 
 The article header format is:
@@ -187,6 +207,30 @@ Body in Markdown...
 ```
 
 The `URL:` line is omitted when the item has no external URL. There is no YAML frontmatter.
+
+### `GET /v1/status`
+
+Returns readiness and snapshot metadata. Protected by the same bearer key as the rest of `/v1` when `API_KEYS` is set. The response uses `Cache-Control: no-store`.
+
+```bash
+curl -H "Authorization: Bearer <key>" https://hnmd.miguehm.com/v1/status
+```
+
+```json
+{
+  "schema_version": 1,
+  "version": "1.5.0",
+  "auth_enabled": true,
+  "ready": true,
+  "snapshot_generated_at": "2026-11-22T14:00:00Z",
+  "next_refresh_at": "2026-11-22T14:30:00Z",
+  "refresh_interval_seconds": 1800,
+  "todo_count": 10,
+  "server_time": "2026-11-22T14:10:00Z"
+}
+```
+
+`ready` is `false` until the first Hacker News snapshot is available. The `snapshot_*` fields are omitted when no snapshot exists yet.
 
 ### `GET /top` (deprecated)
 
@@ -216,7 +260,15 @@ The canonical contract for schemas, error codes and header semantics is [`openap
 | `POST` | `/v1/todos/tasks` | Create task |
 | `GET` | `/v1/todos/tasks/{id}` | Get task |
 | `PATCH` | `/v1/todos/tasks/{id}` | Update title/tags/details/due date/state |
-| `DELETE` | `/v1/todos/tasks/{id}` | Delete task (idempotent `204`) |
+| `DELETE` | `/v1/todos/tasks/{id}` | Delete task (requires `If-Match`, returns `204` even if already missing) |
+
+`GET /v1/todos` and `GET /v1/todos/tags` accept `offset` (default 0) and `limit` (default 100, max 500) and return `offset`, `limit`, `returned_count`, `truncated`, `has_more` and `next_offset`. The `tags` and `counts` fields are global counters; only `items`/`tags` are paginated.
+
+All todo date filters and rendering accept `tz` (IANA name, e.g. `Europe/Madrid`). It overrides `TODO_TIMEZONE` for that request; invalid values return `400 invalid_request` with `field: tz`.
+
+Task responses carry `ETag: "<revision>"`. `PATCH` and `DELETE` require `If-Match` with that revision (strong or weak) or `*`; a missing header returns `428 precondition_required` and a stale revision returns `412 revision_conflict` with `current_revision`.
+
+`POST /v1/todos/tasks` accepts an optional client-generated `id`. If it already exists, the server returns `200` with the stored task instead of `201`, making retries safe.
 
 `status` is `open` (default), `done`, `all`, `due_soon` or `overdue`. `tag` matches any of a task's tags. `due_days` (1–30, default 3) sets the "due soon" horizon; out-of-range values return `400` with `field: due_days`. Both `due_soon` and `overdue` apply only to open tasks: `overdue` means the deadline is before today (UTC), and `due_soon` means today through today + `due_days`, inclusive. Dates are compared as `YYYY-MM-DD` strings so no timezone conversion is needed for the task itself.
 
@@ -235,7 +287,7 @@ The server extracts `#casa` and `#urgente`, normalizes them to lowercase and rem
 An optional `details` note can be supplied on create or patch (up to 1000 bytes, line breaks preserved). It is returned as `details` in task JSON and rendered as indented lines under the task in both Markdown views. Existing tasks without the field simply report no details:
 
 ```bash
-curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+curl -X PATCH -H "Authorization: Bearer <key>" -H "If-Match: \"<revision>\"" -H "Content-Type: application/json" \
   -d '{"details":"Llamar a la tienda antes de las 18:00"}' \
   http://localhost:8982/v1/todos/tasks/<id>
 ```
@@ -243,18 +295,18 @@ curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/jso
 On PATCH, `text` updates the title only: it never clears the existing tags (stored titles have their hashtags stripped). Hashtags in a patched `text` are merged with the current tags, lowercased and deduplicated. Only an explicit `tags` field replaces the list — and `"tags":[]` clears all tags:
 
 ```bash
-curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+curl -X PATCH -H "Authorization: Bearer <key>" -H "If-Match: \"<revision>\"" -H "Content-Type: application/json" \
   -d '{"text":"Comprar leche entera #urgente"}' \
   http://localhost:8982/v1/todos/tasks/<id>   # keeps #casa, adds #urgente
 
-curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+curl -X PATCH -H "Authorization: Bearer <key>" -H "If-Match: \"<revision>\"" -H "Content-Type: application/json" \
   -d '{"tags":[]}' http://localhost:8982/v1/todos/tasks/<id>   # clears all tags
 ```
 
 Mark it done:
 
 ```bash
-curl -X PATCH -H "Authorization: Bearer <key>" -H "Content-Type: application/json" \
+curl -X PATCH -H "Authorization: Bearer <key>" -H "If-Match: \"<revision>\"" -H "Content-Type: application/json" \
   -d '{"done":true}' http://localhost:8982/v1/todos/tasks/<id>
 ```
 
@@ -268,9 +320,9 @@ Writes require `API_KEYS`. If auth is disabled, write endpoints return `403` unl
 
 - **Persistence:** tasks live in `TODO_FILE` with `schema_version: 1`. Writes are atomic and a `.bak` copy is kept; if a save fails, the stored tasks are left unchanged. Tasks survive restarts, and only one server instance should write the file.
 - **Validation:** tags are canonicalized to lowercase and deduplicated; `#café` stays plain text. Text, title, tag and details limits are listed in [Configuration](#configuration). `due_date` must be `YYYY-MM-DD`; invalid values return `400 invalid_request` with `field: due_date`. Tasks saved by older versions load without `details` or `due_date`; the store schema stays at version 1.
-- **State:** completing a task sets `done_at`; reopening it clears `done_at`. Every change updates `updated_at` and increments `revision`; the `ETag` on task responses reflects that revision but is informational only.
-- **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered. They also include `due_soon` and `overdue`, computed with the requested `due_days` (default 3) against today in UTC.
-- **Truncation:** when a response exceeds the size limits in [Configuration](#configuration), the JSON index is trimmed from the tail and reports `truncated: true`; the Markdown view is shortened and includes a visible `> Lista truncada.` note.
+- **State:** completing a task sets `done_at`; reopening it clears `done_at`. Every change updates `updated_at` and increments `revision`; the `ETag` on task responses reflects that revision and must be sent as `If-Match` on the next write.
+- **Counts:** `counts` and `tags` in `GET /v1/todos` are global and ignore the `tag`/`status` filters; only `items` is filtered. They also include `due_soon` and `overdue`, computed with `due_days` (default 3) and today in the effective timezone (`tz` or `TODO_TIMEZONE`, default UTC).
+- **Truncation/pagination:** JSON indexes are paginated and trimmed from the tail when they exceed the size limits in [Configuration](#configuration); `truncated: true`, `has_more` and `next_offset` describe the result. The Markdown view is shortened and includes a visible `> Lista truncada.` note.
 
 ## Content status
 
@@ -310,12 +362,32 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 }
 ```
 
-`ErrorResponse.error` is one of `unauthorized`, `warming_up`, `not_found`, or `internal_error`.
+`ErrorResponse.error` is one of `unauthorized`, `forbidden`, `warming_up`, `invalid_request`, `not_found`, `method_not_allowed`, `payload_too_large`, `precondition_required`, `revision_conflict`, or `internal_error`.
+
+Conditional write failures:
+
+```json
+{
+  "error": "precondition_required",
+  "message": "If-Match header is required for task writes",
+  "field": "if_match"
+}
+```
+
+```json
+{
+  "error": "revision_conflict",
+  "message": "task revision does not match",
+  "current_revision": 3
+}
+```
+
+A successful conditional read returns `304 Not Modified` with no body and the same weak `ETag`.
 
 ## Behavior and limitations
 
 - **No persistence (HN):** snapshots live in memory and are lost on restart. Todo tasks are persisted separately (see [Todos](#todos)).
-- **Warm-up:** until the first ready snapshot exists, both API endpoints return `503`.
+- **Warm-up:** until the first ready snapshot exists, `/v1/top` and `/v1/articles/{id}.md` return `503` with `Retry-After`; `/v1/status` returns `200` with `ready: false`.
 - **Partial failures:** individual item failures do not fail the whole snapshot.
 - **Retention:** while an item remains in the top 20, its last successful article body is reused if a refresh fails. The article header is re-rendered with current metadata.
 - **Full refresh failures:** if fetching the top story list fails, the last valid snapshot is kept and the error is retained internally for logs.
@@ -324,6 +396,8 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 - **Third-party dependencies:** relies on the Hacker News Firebase API and external websites; availability, rate limiting, blocking, and content quality can affect results.
 - **Extraction quality:** readability/Markdown conversion quality varies by source page.
 - **Authentication:** optional bearer auth when `API_KEYS` is set. Use HTTPS in production.
+- **Conditional reads/gzip:** `/v1/top` and articles support weak `ETag` revalidation and gzip with `Vary: Accept-Encoding`.
+- **Pagination/status:** list endpoints support `offset`/`limit`; `/v1/status` reports readiness without triggering scraping.
 - **Todo module:** persistence, validation, truncation, refresh and write permissions are described in [Todos](#todos).
 
 ## Development
@@ -349,6 +423,17 @@ go vet ./...
 go test ./...
 go build ./...
 ```
+
+## 1.5.0 changes
+
+- `PATCH` and `DELETE /v1/todos/tasks/{id}` now require `If-Match`; clients must send the task `ETag` (or `*`).
+- `POST /v1/todos/tasks` accepts an optional `id` and returns `200` on a retry instead of a duplicate `201`.
+- `/v1/top`, `/v1/todos` and `/v1/todos/tags` are paginated with `offset`/`limit` and expose `has_more`/`next_offset`.
+- `/v1/top` and articles support `If-None-Match` with weak ETags and gzip responses.
+- Todo date filters/rendering use `tz` (or `TODO_TIMEZONE`, default UTC).
+- Added `/v1/status` for readiness and snapshot metadata.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for migration details.
 
 ## Breaking changes from the old snapshot API
 
