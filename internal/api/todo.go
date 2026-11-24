@@ -18,55 +18,45 @@ import (
 const (
 	todoMarkdownMaxBytes = 512 * 1024
 	todoBodyMaxBytes     = 64 * 1024
+	todoDefaultLimit     = 100
+	todoMaxLimit         = 500
 )
 
 var todoTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type TodoHandler struct {
-	store         *todo.Store
-	publicBaseURL string
-	writesAllowed bool
-	maxIndexBytes int
-	maxMarkdown   int
-	maxBodyBytes  int64
+	store           *todo.Store
+	publicBaseURL   string
+	writesAllowed   bool
+	maxIndexBytes   int
+	maxMarkdown     int
+	maxBodyBytes    int64
+	defaultLocation *time.Location
+	now             func() time.Time
 }
 
 func NewTodoHandler(st *todo.Store, publicBaseURL string, writesAllowed bool) *TodoHandler {
-	return &TodoHandler{
-		store:         st,
-		publicBaseURL: strings.TrimRight(publicBaseURL, "/"),
-		writesAllowed: writesAllowed,
-		maxIndexBytes: indexMaxBytes,
-		maxMarkdown:   todoMarkdownMaxBytes,
-		maxBodyBytes:  todoBodyMaxBytes,
-	}
+	return NewTodoHandlerWithLocation(st, publicBaseURL, writesAllowed, time.UTC)
 }
 
-type todoErrorBody struct {
-	Error   string  `json:"error"`
-	Message string  `json:"message"`
-	Field   *string `json:"field,omitempty"`
-	TaskID  *string `json:"task_id,omitempty"`
+func NewTodoHandlerWithLocation(st *todo.Store, publicBaseURL string, writesAllowed bool, location *time.Location) *TodoHandler {
+	if location == nil {
+		location = time.UTC
+	}
+	return &TodoHandler{
+		store:           st,
+		publicBaseURL:   strings.TrimRight(publicBaseURL, "/"),
+		writesAllowed:   writesAllowed,
+		maxIndexBytes:   indexMaxBytes,
+		maxMarkdown:     todoMarkdownMaxBytes,
+		maxBodyBytes:    todoBodyMaxBytes,
+		defaultLocation: location,
+		now:             time.Now,
+	}
 }
 
 func writeTodoError(w http.ResponseWriter, status int, code, message, field, taskID string) {
-	body := todoErrorBody{Error: code, Message: message}
-	if field != "" {
-		body.Field = &field
-	}
-	if taskID != "" {
-		body.TaskID = &taskID
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	_, _ = w.Write(data)
+	writeErrorWith(w, status, code, message, errorOptions{field: field, taskID: taskID})
 }
 
 func writeTodoMethodNotAllowed(w http.ResponseWriter, allow string) {
@@ -107,7 +97,22 @@ func parseDueDays(r *http.Request) (int, error) {
 	return parsed, nil
 }
 
-func parseTodoFilter(r *http.Request) (todo.Filter, error) {
+func (h *TodoHandler) parseTimezone(r *http.Request) (*time.Location, error) {
+	values, ok := r.URL.Query()["tz"]
+	if !ok || len(values) == 0 || strings.TrimSpace(values[0]) == "" {
+		return h.defaultLocation, nil
+	}
+	if len(values) != 1 {
+		return nil, &todo.ValidationError{Field: "tz", Message: "tz must be a valid IANA timezone"}
+	}
+	location, err := time.LoadLocation(strings.TrimSpace(values[0]))
+	if err != nil {
+		return nil, &todo.ValidationError{Field: "tz", Message: "tz must be a valid IANA timezone"}
+	}
+	return location, nil
+}
+
+func (h *TodoHandler) parseTodoFilter(r *http.Request) (todo.Filter, error) {
 	var tag, status string
 	if values, ok := r.URL.Query()["tag"]; ok && len(values) > 0 {
 		tag = values[0]
@@ -119,7 +124,11 @@ func parseTodoFilter(r *http.Request) (todo.Filter, error) {
 	if err != nil {
 		return todo.Filter{}, err
 	}
-	return todo.Filter{Tag: tag, Status: status, DueDays: days}.Normalized(), nil
+	location, err := h.parseTimezone(r)
+	if err != nil {
+		return todo.Filter{}, err
+	}
+	return todo.Filter{Tag: tag, Status: status, DueDays: days, Location: location}.Normalized(), nil
 }
 
 func parseTodoTaskID(raw string) (string, bool) {
@@ -129,12 +138,70 @@ func parseTodoTaskID(raw string) (string, bool) {
 	return raw, true
 }
 
-func nowRFC3339() string {
-	return time.Now().UTC().Format(time.RFC3339)
+type ifMatchCondition struct {
+	force     bool
+	revisions []int
 }
 
-func nowDisplay() string {
-	return time.Now().UTC().Format("2006-01-02 15:04")
+func parseIfMatch(r *http.Request) (ifMatchCondition, bool, error) {
+	values := r.Header.Values("If-Match")
+	var condition ifMatchCondition
+	present := false
+	for _, value := range values {
+		for _, raw := range strings.Split(value, ",") {
+			candidate := strings.TrimSpace(raw)
+			if candidate == "" {
+				continue
+			}
+			present = true
+			if candidate == "*" {
+				condition.force = true
+				continue
+			}
+			candidate = strings.TrimPrefix(candidate, "W/")
+			revision, err := strconv.Atoi(strings.Trim(candidate, `"`))
+			if err != nil || revision < 1 {
+				return ifMatchCondition{}, true, &todo.ValidationError{Field: "if_match", Message: "If-Match must be a task revision or *"}
+			}
+			condition.revisions = append(condition.revisions, revision)
+		}
+	}
+	if !present {
+		return ifMatchCondition{}, false, nil
+	}
+	if !condition.force && len(condition.revisions) == 0 {
+		return ifMatchCondition{}, true, &todo.ValidationError{Field: "if_match", Message: "If-Match must be a task revision or *"}
+	}
+	return condition, true, nil
+}
+
+func writeIfMatchRequired(w http.ResponseWriter) {
+	writeTodoError(w, http.StatusPreconditionRequired, "precondition_required", "If-Match header is required for task writes", "if_match", "")
+}
+
+func writeRevisionConflict(w http.ResponseWriter, current int) {
+	w.Header().Set("ETag", `"`+strconv.Itoa(current)+`"`)
+	writeErrorWith(w, http.StatusPreconditionFailed, "revision_conflict", "task revision does not match", errorOptions{
+		currentRevision: &current,
+	})
+}
+
+func (h *TodoHandler) nowTime() time.Time {
+	if h.now == nil {
+		return time.Now()
+	}
+	return h.now()
+}
+
+func (h *TodoHandler) nowRFC3339() string {
+	return h.nowTime().UTC().Format(time.RFC3339)
+}
+
+func (h *TodoHandler) nowDisplay(location *time.Location) string {
+	if location == nil {
+		location = time.UTC
+	}
+	return h.nowTime().In(location).Format("2006-01-02 15:04")
 }
 
 func httpTimeFromRFC3339(value string) string {
@@ -188,8 +255,8 @@ func (h *TodoHandler) decodeJSON(w http.ResponseWriter, r *http.Request, dst any
 }
 
 func (h *TodoHandler) renderMarkdown(tasks []todo.Task, filter todo.Filter, counts todo.Counts) (string, bool) {
-	filtered := todo.FilterTasks(tasks, filter)
-	generatedAt := nowDisplay()
+	filtered := todo.FilterTasksAt(tasks, filter, h.nowTime())
+	generatedAt := h.nowDisplay(filter.Location)
 	truncated := false
 	for {
 		markdown := todo.RenderMarkdown(filtered, todo.RenderOptions{
@@ -236,7 +303,7 @@ func (h *TodoHandler) serveMarkdown(w http.ResponseWriter, r *http.Request, path
 		writeTodoMethodNotAllowed(w, "GET, HEAD")
 		return
 	}
-	filter, err := parseTodoFilter(r)
+	filter, err := h.parseTodoFilter(r)
 	if err != nil {
 		writeTodoValidationError(w, err)
 		return
@@ -250,12 +317,26 @@ func (h *TodoHandler) serveMarkdown(w http.ResponseWriter, r *http.Request, path
 	}
 
 	tasks := h.store.Snapshot()
-	counts := todo.ComputeCountsWith(tasks, todo.CountOptions{DueDays: filter.DueDays})
+	counts := todo.ComputeCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), DueDays: filter.DueDays, Location: filter.Location})
 	markdown, _ := h.renderMarkdown(tasks, filter, counts)
 	h.writeMarkdown(w, r, markdown, filename)
 }
 
 var todoTaskTagPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
+
+func pageBounds(total, offset, limit int) (int, int) {
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > total {
+		offset = total
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return offset, end
+}
 
 func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -263,7 +344,7 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	filter, err := parseTodoFilter(r)
+	filter, err := h.parseTodoFilter(r)
 	if err != nil {
 		writeTodoValidationError(w, err)
 		return
@@ -272,11 +353,17 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tasks := h.store.Snapshot()
-	tagCounts, counts, _ := todo.ComputeTagCountsWith(tasks, todo.CountOptions{DueDays: filter.DueDays})
-	items := todo.FilterTasks(tasks, filter)
-	if items == nil {
-		items = []todo.Task{}
+	tagCounts, counts, _ := todo.ComputeTagCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), DueDays: filter.DueDays, Location: filter.Location})
+	allItems := todo.FilterTasksAt(tasks, filter, h.nowTime())
+	if allItems == nil {
+		allItems = []todo.Task{}
 	}
+
+	limit := parseLimitParam(r, todoDefaultLimit, todoMaxLimit)
+	offset := parseOffset(r)
+	start, end := pageBounds(len(allItems), offset, limit)
+	items := append([]todo.Task{}, allItems[start:end]...)
+	hasMore := end < len(allItems)
 
 	responseFilter := todoFilterJSON{Status: filter.Status, DueDays: filter.DueDays}
 	if filter.Tag != "" {
@@ -289,17 +376,28 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		Filter        todoFilterJSON  `json:"filter"`
 		Counts        todo.Counts     `json:"counts"`
 		Tags          []todo.TagCount `json:"tags"`
+		Offset        int             `json:"offset"`
+		Limit         int             `json:"limit"`
 		ReturnedCount int             `json:"returned_count"`
 		Truncated     bool            `json:"truncated"`
+		HasMore       bool            `json:"has_more"`
+		NextOffset    *int            `json:"next_offset"`
 		Items         []todo.Task     `json:"items"`
 	}{
 		SchemaVersion: 1,
-		GeneratedAt:   nowRFC3339(),
+		GeneratedAt:   h.nowRFC3339(),
 		Filter:        responseFilter,
 		Counts:        counts,
 		Tags:          tagCounts,
+		Offset:        start,
+		Limit:         limit,
 		ReturnedCount: len(items),
+		HasMore:       hasMore,
 		Items:         items,
+	}
+	if hasMore {
+		next := end
+		resp.NextOffset = &next
 	}
 
 	data, err := json.Marshal(resp)
@@ -307,15 +405,37 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
 		return
 	}
+	sizeTruncated := false
 	for len(data) > h.maxIndexBytes && len(resp.Items) > 0 {
 		resp.Items = resp.Items[:len(resp.Items)-1]
-		resp.ReturnedCount = len(resp.Items)
-		resp.Truncated = true
+		sizeTruncated = true
 		data, err = json.Marshal(resp)
 		if err != nil {
 			writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
 			return
 		}
+	}
+	for len(data) > h.maxIndexBytes && len(resp.Tags) > 0 {
+		resp.Tags = resp.Tags[:len(resp.Tags)-1]
+		sizeTruncated = true
+		data, err = json.Marshal(resp)
+		if err != nil {
+			writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
+			return
+		}
+	}
+	resp.ReturnedCount = len(resp.Items)
+	resp.HasMore = start+len(resp.Items) < len(allItems)
+	resp.Truncated = hasMore || sizeTruncated || resp.HasMore
+	resp.NextOffset = nil
+	if resp.HasMore {
+		next := start + len(resp.Items)
+		resp.NextOffset = &next
+	}
+	data, err = json.Marshal(resp)
+	if err != nil {
+		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
+		return
 	}
 	writeTodoJSON(w, http.StatusOK, data)
 }
@@ -351,22 +471,69 @@ func (h *TodoHandler) Tags(w http.ResponseWriter, r *http.Request) {
 		writeTodoValidationError(w, err)
 		return
 	}
+	location, err := h.parseTimezone(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	tasks := h.store.Snapshot()
-	tagCounts, counts, untagged := todo.ComputeTagCountsWith(tasks, todo.CountOptions{DueDays: days})
+	allTags, counts, untagged := todo.ComputeTagCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), DueDays: days, Location: location})
+	limit := parseLimitParam(r, todoDefaultLimit, todoMaxLimit)
+	offset := parseOffset(r)
+	start, end := pageBounds(len(allTags), offset, limit)
+	tags := append([]todo.TagCount(nil), allTags[start:end]...)
+	hasMore := end < len(allTags)
 	resp := struct {
 		SchemaVersion int             `json:"schema_version"`
 		GeneratedAt   string          `json:"generated_at"`
 		Counts        todo.Counts     `json:"counts"`
 		Tags          []todo.TagCount `json:"tags"`
 		Untagged      todo.Counts     `json:"untagged"`
+		Offset        int             `json:"offset"`
+		Limit         int             `json:"limit"`
+		ReturnedCount int             `json:"returned_count"`
+		Truncated     bool            `json:"truncated"`
+		HasMore       bool            `json:"has_more"`
+		NextOffset    *int            `json:"next_offset"`
 	}{
 		SchemaVersion: 1,
-		GeneratedAt:   nowRFC3339(),
+		GeneratedAt:   h.nowRFC3339(),
 		Counts:        counts,
-		Tags:          tagCounts,
+		Tags:          tags,
 		Untagged:      untagged,
+		Offset:        start,
+		Limit:         limit,
+		ReturnedCount: len(tags),
+		HasMore:       hasMore,
+	}
+	if hasMore {
+		next := end
+		resp.NextOffset = &next
 	}
 	data, err := json.Marshal(resp)
+	if err != nil {
+		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
+		return
+	}
+	sizeTruncated := false
+	for len(data) > h.maxIndexBytes && len(resp.Tags) > 0 {
+		resp.Tags = resp.Tags[:len(resp.Tags)-1]
+		sizeTruncated = true
+		data, err = json.Marshal(resp)
+		if err != nil {
+			writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
+			return
+		}
+	}
+	resp.ReturnedCount = len(resp.Tags)
+	resp.HasMore = start+len(resp.Tags) < len(allTags)
+	resp.Truncated = hasMore || sizeTruncated || resp.HasMore
+	resp.NextOffset = nil
+	if resp.HasMore {
+		next := start + len(resp.Tags)
+		resp.NextOffset = &next
+	}
+	data, err = json.Marshal(resp)
 	if err != nil {
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
 		return
@@ -392,27 +559,32 @@ func (h *TodoHandler) Top(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	location, err := h.parseTimezone(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
 	tasks := h.store.Snapshot()
-	counts := todo.ComputeCounts(tasks)
-	open := todo.FilterTasks(tasks, todo.Filter{Status: "open"})
-	updatedAt := nowRFC3339()
+	counts := todo.ComputeCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), Location: location})
+	open := todo.FilterTasksAt(tasks, todo.Filter{Status: "open", Location: location}, h.nowTime())
+	updatedAt := h.nowRFC3339()
 	if last := h.store.LastModified(); !last.IsZero() {
 		updatedAt = last.UTC().Format(time.RFC3339)
 	}
 
 	items := make([]store.IndexItem, 0, 1+len(tasks))
-	markdownAll, _ := h.renderMarkdown(tasks, todo.Filter{Status: "open"}, counts)
+	markdownAll, _ := h.renderMarkdown(tasks, todo.Filter{Status: "open", Location: location}, counts)
 	items = append(items, h.topItem(r, "todos", 1, fmt.Sprintf("Todos (%d abiertas)", len(open)), "/v1/todos.md", "todos.md", markdownAll, updatedAt))
 
 	if r.URL.Query().Get("tags") == "true" {
-		tagCounts, _, _ := todo.ComputeTagCounts(tasks)
+		tagCounts, _, _ := todo.ComputeTagCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), Location: location})
 		for _, tagCount := range tagCounts {
 			if tagCount.Open == 0 {
 				continue
 			}
 			path := "/v1/todos/tags/" + tagCount.Tag + ".md"
 			filename := "todos-" + tagCount.Tag + ".md"
-			filter := todo.Filter{Tag: tagCount.Tag, Status: "open"}
+			filter := todo.Filter{Tag: tagCount.Tag, Status: "open", Location: location}
 			markdown, _ := h.renderMarkdown(tasks, filter, counts)
 			id := "todos-tag-" + tagCount.Tag
 			items = append(items, h.topItem(r, id, len(items)+1, fmt.Sprintf("#%s (%d abiertas)", tagCount.Tag, tagCount.Open), path, filename, markdown, updatedAt))
@@ -421,7 +593,7 @@ func (h *TodoHandler) Top(w http.ResponseWriter, r *http.Request) {
 
 	resp := store.IndexResponse{
 		SchemaVersion:          1,
-		GeneratedAt:            nowRFC3339(),
+		GeneratedAt:            h.nowRFC3339(),
 		NextRefreshAt:          nil,
 		RefreshIntervalSeconds: nil,
 		ReturnedCount:          len(items),
@@ -486,6 +658,7 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
+		ID      string   `json:"id"`
 		Text    string   `json:"text"`
 		Tags    []string `json:"tags"`
 		Details string   `json:"details"`
@@ -511,12 +684,21 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 		writeTodoValidationError(w, err)
 		return
 	}
-	id, err := todo.NewID()
-	if err != nil {
-		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to generate task id", "", "")
+
+	providedID := strings.TrimSpace(req.ID)
+	if providedID != "" && !todoTaskIDPattern.MatchString(providedID) {
+		writeTodoError(w, http.StatusBadRequest, "invalid_request", "invalid task id", "id", "")
 		return
 	}
-	now := nowRFC3339()
+	id := providedID
+	if id == "" {
+		id, err = todo.NewID()
+		if err != nil {
+			writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to generate task id", "", "")
+			return
+		}
+	}
+	now := h.nowRFC3339()
 	task := todo.Task{
 		ID:        id,
 		Title:     title,
@@ -531,7 +713,18 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	if req.Done {
 		task.DoneAt = &now
 	}
-	created, err := h.store.Create(task)
+
+	var created todo.Task
+	status := http.StatusCreated
+	if providedID == "" {
+		created, err = h.store.Create(task)
+	} else {
+		var wasCreated bool
+		created, wasCreated, err = h.store.CreateWithID(task)
+		if !wasCreated {
+			status = http.StatusOK
+		}
+	}
 	if errors.Is(err, todo.ErrTaskLimit) {
 		writeTodoError(w, http.StatusBadRequest, "invalid_request", "task limit reached", "text", "")
 		return
@@ -548,7 +741,7 @@ func (h *TodoHandler) CreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Location", "/v1/todos/tasks/"+created.ID)
 	w.Header().Set("ETag", `"`+strconv.Itoa(created.Revision)+`"`)
-	writeTodoJSON(w, http.StatusCreated, data)
+	writeTodoJSON(w, status, data)
 }
 
 func (h *TodoHandler) Task(w http.ResponseWriter, r *http.Request) {
@@ -606,6 +799,15 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		writeTodoError(w, http.StatusNotFound, "not_found", "Task not found", "", r.PathValue("id"))
 		return
 	}
+	condition, hasCondition, err := parseIfMatch(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
+	if !hasCondition {
+		writeIfMatchRequired(w)
+		return
+	}
 
 	var req struct {
 		Text    *string         `json:"text"`
@@ -622,7 +824,7 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	updated, err := h.store.Update(id, func(task *todo.Task) error {
+	updated, err := h.store.UpdateIfRevision(id, condition.revisions, condition.force, func(task *todo.Task) error {
 		if req.Text != nil {
 			title, parsedTags, err := todo.ParseText(*req.Text, nil)
 			if err != nil {
@@ -668,7 +870,7 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 			if *req.Done != task.Done {
 				task.Done = *req.Done
 				if *req.Done {
-					now := nowRFC3339()
+					now := h.nowRFC3339()
 					task.DoneAt = &now
 				} else {
 					task.DoneAt = nil
@@ -679,6 +881,11 @@ func (h *TodoHandler) UpdateTask(w http.ResponseWriter, r *http.Request) {
 	})
 	if errors.Is(err, todo.ErrNotFound) {
 		writeTodoError(w, http.StatusNotFound, "not_found", "Task not found", "", id)
+		return
+	}
+	var conflict *todo.RevisionConflictError
+	if errors.As(err, &conflict) {
+		writeRevisionConflict(w, conflict.CurrentRevision)
 		return
 	}
 	if err != nil {
@@ -705,7 +912,21 @@ func (h *TodoHandler) DeleteTask(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	if err := h.store.Delete(id); err != nil {
+	condition, hasCondition, err := parseIfMatch(r)
+	if err != nil {
+		writeTodoValidationError(w, err)
+		return
+	}
+	if !hasCondition {
+		writeIfMatchRequired(w)
+		return
+	}
+	if err := h.store.DeleteIfRevision(id, condition.revisions, condition.force); err != nil {
+		var conflict *todo.RevisionConflictError
+		if errors.As(err, &conflict) {
+			writeRevisionConflict(w, conflict.CurrentRevision)
+			return
+		}
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to delete task", "", "")
 		return
 	}

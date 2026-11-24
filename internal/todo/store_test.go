@@ -100,6 +100,74 @@ func TestStorePersistence(t *testing.T) {
 	}
 }
 
+func TestStoreLastModifiedDoesNotGoBackwards(t *testing.T) {
+	st := newTestStore(t, 10)
+	if _, err := st.Create(makeTask("1", "one")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	before := st.LastModified()
+	if before.IsZero() {
+		t.Fatal("LastModified is zero after create")
+	}
+	if err := st.Delete("1"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	after := st.LastModified()
+	if after.Before(before) {
+		t.Fatalf("LastModified regressed from %v to %v", before, after)
+	}
+}
+
+func TestStoreCreateWithIDIsIdempotent(t *testing.T) {
+	st := newTestStore(t, 10)
+	task := makeTask("client1", "one")
+	created, wasCreated, err := st.CreateWithID(task)
+	if err != nil || !wasCreated {
+		t.Fatalf("first CreateWithID = %+v, %v, %v", created, wasCreated, err)
+	}
+	existing, wasCreated, err := st.CreateWithID(makeTask("client1", "changed"))
+	if err != nil || wasCreated {
+		t.Fatalf("second CreateWithID = %+v, %v, %v", existing, wasCreated, err)
+	}
+	if existing.Title != "one" {
+		t.Fatalf("existing title = %q", existing.Title)
+	}
+	if got := st.Count(); got != 1 {
+		t.Fatalf("count = %d", got)
+	}
+}
+
+func TestStoreConditionalUpdateAndDelete(t *testing.T) {
+	st := newTestStore(t, 10)
+	if _, err := st.Create(makeTask("1", "one")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	if _, err := st.UpdateIfRevision("1", []int{1}, false, func(task *Task) error {
+		task.Done = true
+		return nil
+	}); err != nil {
+		t.Fatalf("UpdateIfRevision: %v", err)
+	}
+	if _, err := st.UpdateIfRevision("1", []int{1}, false, func(task *Task) error {
+		task.Title = "stale"
+		return nil
+	}); err == nil {
+		t.Fatal("stale UpdateIfRevision succeeded")
+	} else if conflict, ok := err.(*RevisionConflictError); !ok || conflict.CurrentRevision != 2 {
+		t.Fatalf("conflict = %#v", err)
+	}
+
+	if err := st.DeleteIfRevision("1", []int{1}, false); err == nil {
+		t.Fatal("stale DeleteIfRevision succeeded")
+	} else if conflict, ok := err.(*RevisionConflictError); !ok || conflict.CurrentRevision != 2 {
+		t.Fatalf("delete conflict = %#v", err)
+	}
+	if err := st.DeleteIfRevision("1", nil, true); err != nil {
+		t.Fatalf("forced delete: %v", err)
+	}
+}
+
 func TestStoreTaskLimit(t *testing.T) {
 	st := newTestStore(t, 1)
 	if _, err := st.Create(makeTask("1", "one")); err != nil {

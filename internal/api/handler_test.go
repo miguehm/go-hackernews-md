@@ -168,7 +168,7 @@ func TestArticleGetAndHead(t *testing.T) {
 		if got := rr.Header().Get("Content-Disposition"); got != `inline; filename="1-title.md"` {
 			t.Fatalf("%s Content-Disposition = %q", method, got)
 		}
-		if got := rr.Header().Get("ETag"); got != `"etag"` {
+		if got := rr.Header().Get("ETag"); got != `W/"etag"` {
 			t.Fatalf("%s ETag = %q", method, got)
 		}
 		if got := rr.Header().Get("Last-Modified"); got == "" {

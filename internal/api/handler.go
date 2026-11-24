@@ -1,14 +1,13 @@
 package api
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"hnmd/internal/store"
 )
@@ -40,10 +39,18 @@ func (h *Handler) Top(w http.ResponseWriter, r *http.Request) {
 	h.Index(w, r)
 }
 
+type indexPageResponse struct {
+	store.IndexResponse
+	Offset     int  `json:"offset"`
+	Limit      int  `json:"limit"`
+	HasMore    bool `json:"has_more"`
+	NextOffset *int `json:"next_offset"`
+}
+
 func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
-		writeError(w, http.StatusMethodNotAllowed, "internal_error", "method not allowed", "", nil)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "", nil)
 		return
 	}
 
@@ -54,24 +61,32 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limit := parseLimit(r)
-	items := idx.Items
-	truncated := idx.Truncated
-	if len(items) > limit {
-		items = items[:limit]
-		truncated = true
+	offset := parseOffset(r)
+	total := len(idx.Items)
+	if offset > total {
+		offset = total
 	}
-
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	items := append([]store.IndexItem(nil), idx.Items[offset:end]...)
 	if items == nil {
 		items = []store.IndexItem{}
 	}
-	resp := store.IndexResponse{
-		SchemaVersion:          idx.SchemaVersion,
-		GeneratedAt:            idx.GeneratedAt,
-		NextRefreshAt:          idx.NextRefreshAt,
-		RefreshIntervalSeconds: idx.RefreshIntervalSeconds,
-		ReturnedCount:          len(items),
-		Truncated:              truncated,
-		Items:                  items,
+
+	resp := indexPageResponse{
+		IndexResponse: store.IndexResponse{
+			SchemaVersion:          idx.SchemaVersion,
+			GeneratedAt:            idx.GeneratedAt,
+			NextRefreshAt:          idx.NextRefreshAt,
+			RefreshIntervalSeconds: idx.RefreshIntervalSeconds,
+			ReturnedCount:          len(items),
+			Truncated:              idx.Truncated || end < total,
+			Items:                  items,
+		},
+		Offset: offset,
+		Limit:  limit,
 	}
 
 	data, err := json.Marshal(resp)
@@ -79,10 +94,10 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
 		return
 	}
+	sizeTruncated := false
 	for len(data) > indexMaxBytes && len(resp.Items) > 0 {
 		resp.Items = resp.Items[:len(resp.Items)-1]
-		resp.ReturnedCount = len(resp.Items)
-		resp.Truncated = true
+		sizeTruncated = true
 		data, err = json.Marshal(resp)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
@@ -92,18 +107,43 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 	if len(data) > indexMaxBytes {
 		resp.Items = []store.IndexItem{}
 		resp.ReturnedCount = 0
-		resp.Truncated = true
+		sizeTruncated = true
 		data, err = json.Marshal(resp)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
 			return
 		}
 	}
+	resp.ReturnedCount = len(resp.Items)
+	resp.HasMore = offset+len(resp.Items) < total
+	resp.Truncated = resp.Truncated || sizeTruncated || resp.HasMore
+	if resp.HasMore {
+		next := offset + len(resp.Items)
+		resp.NextOffset = &next
+	}
+	data, err = json.Marshal(resp)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
+		return
+	}
 
+	etag := etagFor(data)
+	var lastModified time.Time
+	if parsed, parseErr := time.Parse(time.RFC3339, idx.GeneratedAt); parseErr == nil {
+		lastModified = parsed
+	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", cacheControlRevalidate)
+	addVary(w, "Accept-Encoding")
+	w.Header().Set("ETag", etag)
+	if !lastModified.IsZero() {
+		w.Header().Set("Last-Modified", lastModified.UTC().Format(http.TimeFormat))
+	}
+	if ifNoneMatch(r, etag) {
+		writeNotModified(w, etag, lastModified)
+		return
+	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("ETag", etagFor(data))
-	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
@@ -111,7 +151,7 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) Article(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
-		writeError(w, http.StatusMethodNotAllowed, "internal_error", "method not allowed", "", nil)
+		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "", nil)
 		return
 	}
 
@@ -132,12 +172,20 @@ func (h *Handler) Article(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	etag := weakETag(article.ETag)
 	w.Header().Set("Content-Type", article.ContentType)
-	w.Header().Set("Content-Length", strconv.Itoa(len(article.Markdown)))
 	w.Header().Set("Content-Disposition", fmt.Sprintf("inline; filename=%q", article.SuggestedFilename))
-	w.Header().Set("ETag", article.ETag)
-	w.Header().Set("Last-Modified", article.LastModified.UTC().Format(http.TimeFormat))
-	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", cacheControlRevalidate)
+	addVary(w, "Accept-Encoding")
+	if !article.LastModified.IsZero() {
+		w.Header().Set("Last-Modified", article.LastModified.UTC().Format(http.TimeFormat))
+	}
+	if ifNoneMatch(r, etag) {
+		writeNotModified(w, etag, article.LastModified)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(article.Markdown)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {
 		_, _ = w.Write(article.Markdown)
@@ -150,47 +198,36 @@ func (h *Handler) writeWarmingUp(w http.ResponseWriter) {
 	writeError(w, http.StatusServiceUnavailable, "warming_up", "Server is warming up, try again later", "", &retryAfter)
 }
 
-type errorBody struct {
-	Error             string  `json:"error"`
-	Message           string  `json:"message"`
-	ItemID            *string `json:"item_id,omitempty"`
-	RetryAfterSeconds *int    `json:"retry_after_seconds,omitempty"`
-}
-
-func writeError(w http.ResponseWriter, status int, code, message, itemID string, retryAfter *int) {
-	body := errorBody{
-		Error:             code,
-		Message:           message,
-		RetryAfterSeconds: retryAfter,
-	}
-	if itemID != "" {
-		body.ItemID = &itemID
-	}
-	data, err := json.Marshal(body)
-	if err != nil {
-		http.Error(w, "internal server error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.WriteHeader(status)
-	_, _ = w.Write(data)
-}
-
 func parseLimit(r *http.Request) int {
+	return parseLimitParam(r, defaultLimit, maxLimit)
+}
+
+func parseLimitParam(r *http.Request, def, max int) int {
 	values, ok := r.URL.Query()["limit"]
 	if !ok || len(values) != 1 {
-		return defaultLimit
+		return def
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(values[0]))
 	if err != nil {
-		return defaultLimit
+		return def
 	}
 	if n < minLimit {
 		return minLimit
 	}
-	if n > maxLimit {
-		return maxLimit
+	if n > max {
+		return max
+	}
+	return n
+}
+
+func parseOffset(r *http.Request) int {
+	values, ok := r.URL.Query()["offset"]
+	if !ok || len(values) != 1 {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(values[0]))
+	if err != nil || n < 0 {
+		return 0
 	}
 	return n
 }
@@ -204,9 +241,4 @@ func parseItemID(raw string) (string, bool) {
 		return "", false
 	}
 	return id, true
-}
-
-func etagFor(data []byte) string {
-	sum := sha256.Sum256(data)
-	return `"` + hex.EncodeToString(sum[:]) + `"`
 }

@@ -286,6 +286,7 @@ func TestTodoCRUD(t *testing.T) {
 	patch := `{"done":true}`
 	req = httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+id, strings.NewReader(patch))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("If-Match", "*")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusOK {
@@ -307,6 +308,7 @@ func TestTodoCRUD(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodDelete, "/v1/todos/tasks/"+id, nil)
+	req.Header.Set("If-Match", "*")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	if rr.Code != http.StatusNoContent {
@@ -345,6 +347,7 @@ func TestTodoDetailsRoundTrip(t *testing.T) {
 	patch := httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+id,
 		strings.NewReader(`{"details":"nueva nota"}`))
 	patch.Header.Set("Content-Type", "application/json")
+	patch.Header.Set("If-Match", "*")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, patch)
 	if rr.Code != http.StatusOK {
@@ -361,6 +364,7 @@ func TestTodoDetailsRoundTrip(t *testing.T) {
 	tooLong := `{"details":"` + strings.Repeat("x", todo.MaxDetailsBytes+1) + `"}`
 	patch = httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+id, strings.NewReader(tooLong))
 	patch.Header.Set("Content-Type", "application/json")
+	patch.Header.Set("If-Match", "*")
 	rr = httptest.NewRecorder()
 	mux.ServeHTTP(rr, patch)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"details"`) {
@@ -433,6 +437,9 @@ func TestTodoInvalidRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := httptest.NewRequest(tt.method, tt.path, strings.NewReader(tt.body))
 			req.Header.Set("Content-Type", tt.contentType)
+			if tt.method == http.MethodPatch {
+				req.Header.Set("If-Match", "*")
+			}
 			rr := httptest.NewRecorder()
 			mux.ServeHTTP(rr, req)
 			if rr.Code != tt.wantStatus {
@@ -548,6 +555,7 @@ func TestTodoPatchTagSemantics(t *testing.T) {
 
 			patchReq := httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/"+created.ID, strings.NewReader(tt.patch))
 			patchReq.Header.Set("Content-Type", "application/json")
+			patchReq.Header.Set("If-Match", "*")
 			patchRR := httptest.NewRecorder()
 			mux.ServeHTTP(patchRR, patchReq)
 			if patchRR.Code != http.StatusOK {

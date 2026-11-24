@@ -7,16 +7,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata"
 
 	"hnmd/internal/api"
 	"hnmd/internal/service"
 	"hnmd/internal/store"
 	"hnmd/internal/todo"
 )
+
+var version = "dev"
 
 func getenv(key, def string) string {
 	if v := os.Getenv(key); v != "" {
@@ -50,6 +54,36 @@ func parseIntEnv(key string, def int) int {
 		return def
 	}
 	return n
+}
+
+func loadLocationEnv(key string, def *time.Location) *time.Location {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return def
+	}
+	location, err := time.LoadLocation(raw)
+	if err != nil {
+		log.Printf("warning: invalid %s %q: %v; using UTC", key, raw, err)
+		return time.UTC
+	}
+	return location
+}
+
+func buildVersion() string {
+	if version != "" && version != "dev" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok {
+		if info.Main.Version != "" && info.Main.Version != "(devel)" {
+			return info.Main.Version
+		}
+		for _, setting := range info.Settings {
+			if setting.Key == "vcs.revision" && setting.Value != "" {
+				return setting.Value
+			}
+		}
+	}
+	return "dev"
 }
 
 func parseAPIKeys(raw string) []string {
@@ -110,9 +144,11 @@ func main() {
 		log.Fatalf("failed to load todo store: %v", err)
 	}
 	log.Printf("todo store loaded from %s", todoFile)
-	todoHandler := api.NewTodoHandler(todoStore, os.Getenv("PUBLIC_BASE_URL"), authEnabled || todoAllowInsecureWrites)
+	todoLocation := loadLocationEnv("TODO_TIMEZONE", time.UTC)
+	todoHandler := api.NewTodoHandlerWithLocation(todoStore, os.Getenv("PUBLIC_BASE_URL"), authEnabled || todoAllowInsecureWrites, todoLocation)
 
 	h := api.New(st, int(refreshInterval.Seconds()))
+	statusHandler := api.NewStatusHandler(st, todoStore, authEnabled, buildVersion())
 	mux := http.NewServeMux()
 
 	healthHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +168,7 @@ func main() {
 		mux.Handle(pattern, handler)
 	}
 
+	register("/v1/status", statusHandler)
 	register("/v1/top", http.HandlerFunc(h.Index))
 	register("/v1/articles/{itemId}", http.HandlerFunc(h.Article))
 	register("/top", http.HandlerFunc(h.Top))
@@ -152,7 +189,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           mux,
+		Handler:           api.GzipMiddleware(mux),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,

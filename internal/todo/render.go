@@ -15,14 +15,18 @@ type RenderOptions struct {
 }
 
 func FilterTasks(tasks []Task, filter Filter) []Task {
-	return FilterTasksAt(tasks, filter, time.Now().UTC())
+	return FilterTasksAt(tasks, filter, time.Now())
 }
 
 // FilterTasksAt is the deterministic form used by tests and by callers that
 // already computed "today" (for example the HTTP handler building counts).
 func FilterTasksAt(tasks []Task, filter Filter, now time.Time) []Task {
 	f := filter.Normalized()
-	now = now.UTC()
+	location := f.Location
+	if location == nil {
+		location = time.UTC
+	}
+	now = now.In(location)
 	today := now.Format(DueDateLayout)
 	limit := now.AddDate(0, 0, f.DueDays).Format(DueDateLayout)
 	out := make([]Task, 0, len(tasks))

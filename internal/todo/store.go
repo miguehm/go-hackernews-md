@@ -18,11 +18,20 @@ type storeFile struct {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	file     string
-	backup   string
-	tasks    []Task
-	maxTasks int
+	mu        sync.RWMutex
+	file      string
+	backup    string
+	tasks     []Task
+	maxTasks  int
+	updatedAt time.Time
+}
+
+type RevisionConflictError struct {
+	CurrentRevision int
+}
+
+func (e *RevisionConflictError) Error() string {
+	return "task revision conflict"
 }
 
 func NewStore(file string, maxTasks int) (*Store, error) {
@@ -101,7 +110,27 @@ func (s *Store) load() error {
 		}
 	}
 	s.tasks = append([]Task(nil), file.Tasks...)
+	if parsed, err := time.Parse(time.RFC3339, file.UpdatedAt); err == nil {
+		s.updatedAt = parsed.UTC()
+	}
+	if s.updatedAt.IsZero() {
+		s.updatedAt = latestTaskUpdate(s.tasks)
+	}
 	return nil
+}
+
+func latestTaskUpdate(tasks []Task) time.Time {
+	var latest time.Time
+	for _, task := range tasks {
+		parsed, err := time.Parse(time.RFC3339, task.UpdatedAt)
+		if err != nil {
+			continue
+		}
+		if parsed.After(latest) {
+			latest = parsed
+		}
+	}
+	return latest
 }
 
 func (s *Store) Snapshot() []Task {
@@ -123,72 +152,130 @@ func (s *Store) Get(id string) (Task, bool) {
 func (s *Store) LastModified() time.Time {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var latest time.Time
-	for _, t := range s.tasks {
-		parsed, err := time.Parse(time.RFC3339, t.UpdatedAt)
-		if err != nil {
-			continue
-		}
-		if parsed.After(latest) {
-			latest = parsed
-		}
-	}
-	return latest
+	return s.updatedAt
+}
+
+func (s *Store) Count() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.tasks)
 }
 
 func (s *Store) Create(task Task) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.insertLocked(task)
+}
+
+// CreateWithID inserts a task unless its ID already exists. The second return
+// value reports whether the task was created; false means an existing task was
+// returned unchanged.
+func (s *Store) CreateWithID(task Task) (Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if idx := s.indexOf(task.ID); idx >= 0 {
+		return CloneTask(s.tasks[idx]), false, nil
+	}
+	created, err := s.insertLocked(task)
+	if err != nil {
+		return Task{}, false, err
+	}
+	return created, true, nil
+}
+
+func (s *Store) insertLocked(task Task) (Task, error) {
 	if len(s.tasks) >= s.maxTasks {
 		return Task{}, ErrTaskLimit
 	}
 	next := CloneTask(task)
 	s.tasks = append(s.tasks, next)
+	previousUpdatedAt := s.updatedAt
+	s.touchLocked()
 	if err := s.saveLocked(); err != nil {
 		s.tasks = s.tasks[:len(s.tasks)-1]
+		s.updatedAt = previousUpdatedAt
 		return Task{}, err
 	}
 	return CloneTask(next), nil
 }
 
 func (s *Store) Update(id string, mutate func(*Task) error) (Task, error) {
+	return s.UpdateIfRevision(id, nil, true, mutate)
+}
+
+func (s *Store) UpdateIfRevision(id string, expected []int, force bool, mutate func(*Task) error) (Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := s.indexOf(id)
 	if idx < 0 {
 		return Task{}, ErrNotFound
 	}
-	next := CloneTask(s.tasks[idx])
+	current := s.tasks[idx]
+	if !force && !revisionMatches(current.Revision, expected) {
+		return Task{}, &RevisionConflictError{CurrentRevision: current.Revision}
+	}
+	next := CloneTask(current)
 	if err := mutate(&next); err != nil {
 		return Task{}, err
 	}
 	next.ID = id
-	next.Revision = s.tasks[idx].Revision + 1
-	next.UpdatedAt = nowString()
+	next.Revision = current.Revision + 1
+	previousUpdatedAt := s.updatedAt
+	now := s.touchLocked()
+	next.UpdatedAt = now.Format(time.RFC3339)
 
 	previous := s.tasks[idx]
 	s.tasks[idx] = next
 	if err := s.saveLocked(); err != nil {
 		s.tasks[idx] = previous
+		s.updatedAt = previousUpdatedAt
 		return Task{}, err
 	}
 	return CloneTask(next), nil
 }
 
 func (s *Store) Delete(id string) error {
+	return s.DeleteIfRevision(id, nil, true)
+}
+
+func (s *Store) DeleteIfRevision(id string, expected []int, force bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	idx := s.indexOf(id)
 	if idx < 0 {
 		return nil
 	}
+	if !force && !revisionMatches(s.tasks[idx].Revision, expected) {
+		return &RevisionConflictError{CurrentRevision: s.tasks[idx].Revision}
+	}
 	previous := append([]Task(nil), s.tasks...)
+	previousUpdatedAt := s.updatedAt
 	s.tasks = append(s.tasks[:idx], s.tasks[idx+1:]...)
+	s.touchLocked()
 	if err := s.saveLocked(); err != nil {
 		s.tasks = previous
+		s.updatedAt = previousUpdatedAt
 		return err
 	}
 	return nil
+}
+
+func revisionMatches(current int, expected []int) bool {
+	for _, revision := range expected {
+		if revision == current {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Store) touchLocked() time.Time {
+	now := time.Now().UTC()
+	if !s.updatedAt.IsZero() && !now.After(s.updatedAt) {
+		now = s.updatedAt.Add(time.Second)
+	}
+	s.updatedAt = now
+	return now
 }
 
 func (s *Store) indexOf(id string) int {
@@ -209,9 +296,13 @@ func (s *Store) saveLocked() error {
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
 
+	updatedAt := s.updatedAt
+	if updatedAt.IsZero() {
+		updatedAt = time.Now().UTC()
+	}
 	file := storeFile{
 		SchemaVersion: 1,
-		UpdatedAt:     nowString(),
+		UpdatedAt:     updatedAt.Format(time.RFC3339),
 		Tasks:         s.tasks,
 	}
 	encoder := json.NewEncoder(tmp)

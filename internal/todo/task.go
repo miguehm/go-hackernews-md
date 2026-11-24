@@ -88,23 +88,28 @@ type TagCount struct {
 }
 
 type Filter struct {
-	Tag     string
-	Status  string
-	DueDays int
+	Tag      string
+	Status   string
+	DueDays  int
+	Location *time.Location
 }
 
 // CountOptions controls the reference date and horizon used for the deadline
 // counters. A zero value means "now, with the default due-soon window".
 type CountOptions struct {
-	Now     time.Time
-	DueDays int
+	Now      time.Time
+	DueDays  int
+	Location *time.Location
 }
 
 func (o CountOptions) normalized() CountOptions {
-	o.Now = o.Now.UTC()
-	if o.Now.IsZero() {
-		o.Now = time.Now().UTC()
+	if o.Location == nil {
+		o.Location = time.UTC
 	}
+	if o.Now.IsZero() {
+		o.Now = time.Now()
+	}
+	o.Now = o.Now.In(o.Location)
 	if o.DueDays <= 0 {
 		o.DueDays = DefaultDueDays
 	}

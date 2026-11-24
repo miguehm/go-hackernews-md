@@ -122,7 +122,7 @@ func TestSuccessHeadersIncludeNoCache(t *testing.T) {
 
 	rr := httptest.NewRecorder()
 	h.Index(rr, httptest.NewRequest(http.MethodGet, "/v1/top", nil))
-	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+	if got := rr.Header().Get("Cache-Control"); got != cacheControlRevalidate {
 		t.Fatalf("Index Cache-Control = %q", got)
 	}
 
@@ -130,7 +130,7 @@ func TestSuccessHeadersIncludeNoCache(t *testing.T) {
 	req.SetPathValue("itemId", "1.md")
 	rr = httptest.NewRecorder()
 	h.Article(rr, req)
-	if got := rr.Header().Get("Cache-Control"); got != "no-cache" {
+	if got := rr.Header().Get("Cache-Control"); got != cacheControlRevalidate {
 		t.Fatalf("Article Cache-Control = %q", got)
 	}
 }
@@ -277,6 +277,7 @@ func TestTodoUpdateTaskFields(t *testing.T) {
 	patch := func(body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPatch, "/v1/todos/tasks/a1", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("If-Match", "*")
 		rr := httptest.NewRecorder()
 		mux.ServeHTTP(rr, req)
 		return rr

@@ -17,6 +17,9 @@ func todoDueRequest(t *testing.T, mux *http.ServeMux, method, path, body string)
 	if body != "" {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	if method == http.MethodPatch || method == http.MethodDelete {
+		req.Header.Set("If-Match", "*")
+	}
 	rr := httptest.NewRecorder()
 	mux.ServeHTTP(rr, req)
 	return rr
