@@ -61,7 +61,7 @@ func TestTodoIndex(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rr.Code)
 	}
-	if got := rr.Header().Get("Cache-Control"); got != "no-store" {
+	if got := rr.Header().Get("Cache-Control"); got != cacheControlRevalidate {
 		t.Fatalf("Cache-Control = %q", got)
 	}
 	if got := rr.Header().Get("Content-Length"); got != strconv.Itoa(rr.Body.Len()) {

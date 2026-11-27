@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.6.0 — 2026-11-27
+
+### Added
+
+- CORS support with an origin allowlist configured through `CORS_ORIGINS`. Defaults are `web`, `http://localhost:5173`, `https://localhost` and `capacitor://localhost`; setting the variable replaces the defaults and `*` is ignored.
+- `OPTIONS` preflight returns `204` before authentication, allowing `Authorization`, `Content-Type`, `If-Match` and `If-None-Match`, exposing `ETag`, `Retry-After` and `Location`, and adding `Vary: Origin`.
+- Conditional reads for `GET /v1/todos` and `GET /v1/todos/tags`: send `If-None-Match` with the weak `ETag` to receive `304 Not Modified` with `ETag`, `Last-Modified` and no body.
+
+### Fixed
+
+- The `ETag` of `/v1/todos` and `/v1/todos/tags` no longer changes on every request: `generated_at` is now the store's `LastModified()` timestamp instead of a per-request clock value. The validator still changes when tasks or filters change the payload.
+
+### Changed
+
+- `GET /v1/todos` and `GET /v1/todos/tags` now use `Cache-Control: private, no-cache` instead of `no-store`. Task responses, task Markdown, `/v1/status` and error responses keep `no-store`.
+- `openapi.yaml` version is now `1.6.0` and documents the CORS policy, the 304 responses and the updated cache directives.
+
+### Migration for clients
+
+- Revalidate the todo and tag indexes with `If-None-Match`. On `304`, keep the existing local index; a pagination page is identified by its own `ETag`.
+- Do not treat `generated_at` in these two indexes as the wall-clock response time. It is the last store modification time and is stable between writes.
+- Browser clients may call the API from the default origins above; add others through `CORS_ORIGINS`. Preflight does not require an API key.
+
 ## 1.5.0 — 2026-11-24
 
 Breaking and contract changes. Android clients should be updated before enabling this version in production.

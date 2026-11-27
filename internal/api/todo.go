@@ -25,14 +25,15 @@ const (
 var todoTaskIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
 
 type TodoHandler struct {
-	store           *todo.Store
-	publicBaseURL   string
-	writesAllowed   bool
-	maxIndexBytes   int
-	maxMarkdown     int
-	maxBodyBytes    int64
-	defaultLocation *time.Location
-	now             func() time.Time
+	store            *todo.Store
+	publicBaseURL    string
+	writesAllowed    bool
+	maxIndexBytes    int
+	maxMarkdown      int
+	maxBodyBytes     int64
+	defaultLocation  *time.Location
+	fallbackModified time.Time
+	now              func() time.Time
 }
 
 func NewTodoHandler(st *todo.Store, publicBaseURL string, writesAllowed bool) *TodoHandler {
@@ -44,14 +45,15 @@ func NewTodoHandlerWithLocation(st *todo.Store, publicBaseURL string, writesAllo
 		location = time.UTC
 	}
 	return &TodoHandler{
-		store:           st,
-		publicBaseURL:   strings.TrimRight(publicBaseURL, "/"),
-		writesAllowed:   writesAllowed,
-		maxIndexBytes:   indexMaxBytes,
-		maxMarkdown:     todoMarkdownMaxBytes,
-		maxBodyBytes:    todoBodyMaxBytes,
-		defaultLocation: location,
-		now:             time.Now,
+		store:            st,
+		publicBaseURL:    strings.TrimRight(publicBaseURL, "/"),
+		writesAllowed:    writesAllowed,
+		maxIndexBytes:    indexMaxBytes,
+		maxMarkdown:      todoMarkdownMaxBytes,
+		maxBodyBytes:     todoBodyMaxBytes,
+		defaultLocation:  location,
+		fallbackModified: time.Now().UTC(),
+		now:              time.Now,
 	}
 }
 
@@ -79,6 +81,41 @@ func writeTodoJSON(w http.ResponseWriter, status int, data []byte) {
 	w.Header().Set("ETag", etagFor(data))
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
+	_, _ = w.Write(data)
+}
+
+// indexModified returns a stable timestamp for cacheable JSON indexes. Task
+// writes move it forward; an empty store falls back to the handler start time
+// so that repeated reads still share one ETag.
+func (h *TodoHandler) indexModified() time.Time {
+	if last := h.store.LastModified(); !last.IsZero() {
+		return last.UTC()
+	}
+	if !h.fallbackModified.IsZero() {
+		return h.fallbackModified.UTC()
+	}
+	return time.Now().UTC()
+}
+
+func (h *TodoHandler) indexGeneratedAt(modified time.Time) string {
+	return modified.UTC().Format(time.RFC3339)
+}
+
+// writeTodoIndexJSON serves a revalidatable index. Unlike writeTodoJSON, the
+// payload is cacheable (private, no-cache) and If-None-Match can produce a 304.
+func (h *TodoHandler) writeTodoIndexJSON(w http.ResponseWriter, r *http.Request, data []byte, modified time.Time) {
+	etag := etagFor(data)
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Cache-Control", cacheControlRevalidate)
+	addVary(w, "Accept-Encoding")
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Last-Modified", modified.UTC().Format(http.TimeFormat))
+	if ifNoneMatch(r, etag) {
+		writeNotModified(w, etag, modified)
+		return
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }
 
@@ -353,6 +390,7 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tasks := h.store.Snapshot()
+	modified := h.indexModified()
 	tagCounts, counts, _ := todo.ComputeTagCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), DueDays: filter.DueDays, Location: filter.Location})
 	allItems := todo.FilterTasksAt(tasks, filter, h.nowTime())
 	if allItems == nil {
@@ -385,7 +423,7 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		Items         []todo.Task     `json:"items"`
 	}{
 		SchemaVersion: 1,
-		GeneratedAt:   h.nowRFC3339(),
+		GeneratedAt:   h.indexGeneratedAt(modified),
 		Filter:        responseFilter,
 		Counts:        counts,
 		Tags:          tagCounts,
@@ -437,7 +475,7 @@ func (h *TodoHandler) Index(w http.ResponseWriter, r *http.Request) {
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
 		return
 	}
-	writeTodoJSON(w, http.StatusOK, data)
+	h.writeTodoIndexJSON(w, r, data, modified)
 }
 
 type todoFilterJSON struct {
@@ -477,6 +515,7 @@ func (h *TodoHandler) Tags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tasks := h.store.Snapshot()
+	modified := h.indexModified()
 	allTags, counts, untagged := todo.ComputeTagCountsWith(tasks, todo.CountOptions{Now: h.nowTime(), DueDays: days, Location: location})
 	limit := parseLimitParam(r, todoDefaultLimit, todoMaxLimit)
 	offset := parseOffset(r)
@@ -497,7 +536,7 @@ func (h *TodoHandler) Tags(w http.ResponseWriter, r *http.Request) {
 		NextOffset    *int            `json:"next_offset"`
 	}{
 		SchemaVersion: 1,
-		GeneratedAt:   h.nowRFC3339(),
+		GeneratedAt:   h.indexGeneratedAt(modified),
 		Counts:        counts,
 		Tags:          tags,
 		Untagged:      untagged,
@@ -538,7 +577,7 @@ func (h *TodoHandler) Tags(w http.ResponseWriter, r *http.Request) {
 		writeTodoError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", "")
 		return
 	}
-	writeTodoJSON(w, http.StatusOK, data)
+	h.writeTodoIndexJSON(w, r, data, modified)
 }
 
 func (h *TodoHandler) absoluteURL(r *http.Request, path string) string {

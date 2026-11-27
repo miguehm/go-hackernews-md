@@ -3,6 +3,8 @@ package main
 import (
 	"reflect"
 	"testing"
+
+	"hnmd/internal/api"
 )
 
 func TestGetenv(t *testing.T) {
@@ -73,6 +75,30 @@ func TestParseIntEnv(t *testing.T) {
 			t.Setenv("HNMD_TEST_INT", tt.value)
 			if got := parseIntEnv("HNMD_TEST_INT", tt.def); got != tt.want {
 				t.Fatalf("parseIntEnv(%q, %d) = %d, want %d", tt.value, tt.def, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseCORSOrigins(t *testing.T) {
+	defaults := append([]string(nil), api.DefaultCORSOrigins...)
+	tests := []struct {
+		name string
+		raw  string
+		want []string
+	}{
+		{name: "unset uses defaults", raw: "", want: defaults},
+		{name: "whitespace uses defaults", raw: "  ", want: defaults},
+		{name: "wildcard only uses defaults", raw: "*", want: defaults},
+		{name: "single", raw: "https://app.example", want: []string{"https://app.example"}},
+		{name: "override with spaces, blanks and duplicates", raw: " web , , web , http://localhost:5173 ", want: []string{"web", "http://localhost:5173"}},
+		{name: "wildcard is skipped", raw: " *, https://app.example ", want: []string{"https://app.example"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseCORSOrigins(tt.raw)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseCORSOrigins(%q) = %v, want %v", tt.raw, got, tt.want)
 			}
 		})
 	}

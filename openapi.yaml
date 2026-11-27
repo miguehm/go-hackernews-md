@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: hnmd API — KindleHome (file-based)
-  version: 1.5.0
+  version: 1.6.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT
@@ -16,11 +16,19 @@ info:
 
     Política recomendada para clientes 1.5:
     - Descarga on-demand al abrir un ítem; nunca descarga masiva en el refresco.
-    - Puede revalidar `/top` y `/articles/{itemId}.md` con `If-None-Match`.
-      Un `304 Not Modified` conserva la copia local y no descarga el cuerpo.
-    - Los `ETag` son débiles (`W/"..."`); `Last-Modified` es informativo.
+    - Puede revalidar `/top`, `/articles/{itemId}.md`, `/todos` y
+      `/todos/tags` con `If-None-Match`. Un `304 Not Modified` conserva la
+      copia local y no descarga el cuerpo.
+    - Los `ETag` son débiles (`W/"..."`); `Last-Modified` es informativo y en
+      los índices de tareas corresponde a la última modificación del store.
     - Se acepta `Accept-Encoding: gzip`; la respuesta comprimida conserva el
       mismo `ETag` débil y añade `Vary: Accept-Encoding`.
+    - CORS: el allowlist se configura con `CORS_ORIGINS` (por defecto `web`,
+      `http://localhost:5173`, `https://localhost` y `capacitor://localhost`).
+      Las peticiones `OPTIONS` responden `204` sin autenticación. Se permiten
+      `Authorization`, `Content-Type`, `If-Match` e `If-None-Match`; se exponen
+      `ETag`, `Retry-After` y `Location`. Las respuestas CORS añaden
+      `Vary: Origin`.
     - Un `404` NO implica borrar la copia local ya descargada.
     - Límites: índice ≤ 128 KiB, artículo ≤ 512 KiB. Respuestas mayores se
       descartan como `too_large`.
@@ -356,6 +364,7 @@ paths:
         - $ref: '#/components/parameters/StatusQuery'
         - $ref: '#/components/parameters/DueDaysQuery'
         - $ref: '#/components/parameters/TimezoneQuery'
+        - $ref: '#/components/parameters/IfNoneMatch'
         - $ref: '#/components/parameters/OffsetQuery'
         - in: query
           name: limit
@@ -371,6 +380,8 @@ paths:
           headers:
             ETag:
               $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
           content:
@@ -422,6 +433,8 @@ paths:
                         updated_at: '2026-11-22T13:00:00Z'
                         done_at: null
                         revision: 1
+        '304':
+          $ref: '#/components/responses/NotModified'
         '401':
           $ref: '#/components/responses/Unauthorized'
         default:
@@ -477,6 +490,7 @@ paths:
       parameters:
         - $ref: '#/components/parameters/DueDaysQuery'
         - $ref: '#/components/parameters/TimezoneQuery'
+        - $ref: '#/components/parameters/IfNoneMatch'
         - $ref: '#/components/parameters/OffsetQuery'
         - in: query
           name: limit
@@ -492,6 +506,8 @@ paths:
           headers:
             ETag:
               $ref: '#/components/headers/ETag'
+            Last-Modified:
+              $ref: '#/components/headers/LastModified'
             Cache-Control:
               $ref: '#/components/headers/CacheControl'
           content:
@@ -534,6 +550,8 @@ paths:
                       total: 3
                       due_soon: 0
                       overdue: 0
+        '304':
+          $ref: '#/components/responses/NotModified'
         '401':
           $ref: '#/components/responses/Unauthorized'
         default:
@@ -984,19 +1002,25 @@ components:
   headers:
     ETag:
       description: |
-        En `/top` y artículos es débil y sirve para `If-None-Match`. En tareas
-        refleja `revision` y debe enviarse como `If-Match` en PATCH/DELETE.
+        En `/top`, artículos, `/todos` y `/todos/tags` es débil y sirve para
+        `If-None-Match`. En tareas refleja `revision` y debe enviarse como
+        `If-Match` en PATCH/DELETE.
       schema:
         type: string
     LastModified:
-      description: Fecha de `updated_at` en formato HTTP.
+      description: |
+        Fecha de última modificación en formato HTTP. En índices de tareas es
+        el timestamp del store; en tareas y artículos, su `updated_at`.
       schema:
         type: string
     CacheControl:
-      description: 'no-store; el contenido es mutable.'
+      description: |
+        `private, no-cache` en respuestas revalidables (`/top`, artículos,
+        `/todos` y `/todos/tags`); `no-store` en contenido mutable (tareas,
+        Markdown de tareas, `/status` y errores).
       schema:
         type: string
-        example: 'no-store'
+        example: 'private, no-cache'
     ContentLength:
       description: Tamaño exacto en bytes.
       schema:
@@ -1045,11 +1069,13 @@ components:
           description: Mismo ETag débil que la representación actual.
           schema: { type: string }
         Last-Modified:
+          description: Última modificación del recurso en formato HTTP.
           schema: { type: string }
         Cache-Control:
           schema: { type: string, example: 'private, no-cache' }
         Vary:
-          schema: { type: string, example: 'Accept-Encoding' }
+          description: Cabeceras que afectan a la representación.
+          schema: { type: string, example: 'Origin, Accept-Encoding' }
     PreconditionRequired:
       description: Falta `If-Match` en una escritura de tarea.
       content:
@@ -1583,6 +1609,7 @@ components:
         generated_at:
           type: string
           format: date-time
+          description: Última modificación del store de tareas (UTC); estable entre escrituras.
         filter:
           type: object
           required: [status]
@@ -1651,6 +1678,7 @@ components:
         generated_at:
           type: string
           format: date-time
+          description: Última modificación del store de tareas (UTC); estable entre escrituras.
         counts:
           allOf:
             - $ref: '#/components/schemas/TodoCounts'

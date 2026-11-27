@@ -22,7 +22,7 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 - Index capped at 128 KiB, articles capped at 512 KiB
 - Todo module: JSON + Markdown views, flat `#tags`, optional due dates (`due_soon`/`overdue` filters), deterministic ordering
 - Persistent, atomic JSON store for tasks with `.bak` fallback
-- Conditional reads (`If-None-Match` → `304`) and gzip for `/v1/top` and articles
+- Conditional reads (`If-None-Match` → `304`) and gzip for `/v1/top`, articles, `/v1/todos` and `/v1/todos/tags`
 - Offset pagination for `/v1/top`, `/v1/todos` and `/v1/todos/tags`
 - Optimistic concurrency on task writes via mandatory `If-Match`
 - Idempotent task creation with a client-provided `id`
@@ -90,6 +90,7 @@ Environment variables read at startup:
 | `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. |
 | `TODO_ALLOW_INSECURE_WRITES` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | Allow todo writes when `API_KEYS` is unset. Off by default. |
 | `PUBLIC_BASE_URL` | _(empty)_ | URL | Optional external base URL used for absolute `hn_url` values in `/v1/todos/top`. |
+| `CORS_ORIGINS` | `web,http://localhost:5173,https://localhost,capacitor://localhost` | Comma-separated origins | Browser allowlist. Overrides the defaults when set; `*` is ignored. `OPTIONS` preflight is answered with `204` before auth. |
 
 > **Security:** when authentication is enabled, run behind HTTPS so the bearer key is not exposed in transit. Keys are compared in constant time. If `API_KEYS` is unset, auth is disabled and a startup warning is logged.
 
@@ -110,6 +111,28 @@ Values fixed in code:
 ## API
 
 The canonical contract is [`openapi.yaml`](./openapi.yaml) (OpenAPI 3.0.3). The production base URL is `https://hnmd.miguehm.com/v1`.
+
+### CORS
+
+Browser clients are limited to the origins in `CORS_ORIGINS`. For an allowed
+origin the server returns `Access-Control-Allow-Origin` and exposes `ETag`,
+`Retry-After` and `Location`. Preflight requests are answered with `204` before
+authentication:
+
+```bash
+curl -i -X OPTIONS http://localhost:8982/v1/todos/tasks \
+  -H 'Origin: http://localhost:5173' \
+  -H 'Access-Control-Request-Method: PATCH' \
+  -H 'Access-Control-Request-Headers: authorization,content-type,if-match'
+# 204 No Content
+# Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS
+# Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, If-None-Match
+# Access-Control-Expose-Headers: ETag, Retry-After, Location
+# Vary: Origin
+```
+
+All CORS responses include `Vary: Origin`. A disallowed origin gets no
+`Access-Control-Allow-Origin`, so the browser blocks the response.
 
 ### `GET /v1/top`
 
@@ -264,6 +287,15 @@ The canonical contract for schemas, error codes and header semantics is [`openap
 
 `GET /v1/todos` and `GET /v1/todos/tags` accept `offset` (default 0) and `limit` (default 100, max 500) and return `offset`, `limit`, `returned_count`, `truncated`, `has_more` and `next_offset`. The `tags` and `counts` fields are global counters; only `items`/`tags` are paginated.
 
+These two JSON indexes are cacheable with `Cache-Control: private, no-cache`. They carry a stable weak `ETag` and `Last-Modified`; send the ETag back as `If-None-Match` to get `304 Not Modified` with no body. `generated_at` equals the store's last modification time, so it no longer changes on every request. Task responses, task Markdown and error responses keep `Cache-Control: no-store`.
+
+```bash
+ETAG=$(curl -sD - -o /dev/null http://localhost:8982/v1/todos -H "Authorization: Bearer <key>" \
+  | awk -F': ' 'tolower($1)=="etag"{gsub(/\r/,"",$2); print $2}')
+curl -i http://localhost:8982/v1/todos -H "Authorization: Bearer <key>" -H "If-None-Match: $ETAG"
+# 304 Not Modified
+```
+
 All todo date filters and rendering accept `tz` (IANA name, e.g. `Europe/Madrid`). It overrides `TODO_TIMEZONE` for that request; invalid values return `400 invalid_request` with `field: tz`.
 
 Task responses carry `ETag: "<revision>"`. `PATCH` and `DELETE` require `If-Match` with that revision (strong or weak) or `*`; a missing header returns `428 precondition_required` and a stale revision returns `412 revision_conflict` with `current_revision`.
@@ -382,7 +414,7 @@ Conditional write failures:
 }
 ```
 
-A successful conditional read returns `304 Not Modified` with no body and the same weak `ETag`.
+A successful conditional read on `/v1/top`, articles, `/v1/todos` or `/v1/todos/tags` returns `304 Not Modified` with no body, the same weak `ETag` and `Last-Modified`.
 
 ## Behavior and limitations
 
@@ -396,7 +428,8 @@ A successful conditional read returns `304 Not Modified` with no body and the sa
 - **Third-party dependencies:** relies on the Hacker News Firebase API and external websites; availability, rate limiting, blocking, and content quality can affect results.
 - **Extraction quality:** readability/Markdown conversion quality varies by source page.
 - **Authentication:** optional bearer auth when `API_KEYS` is set. Use HTTPS in production.
-- **Conditional reads/gzip:** `/v1/top` and articles support weak `ETag` revalidation and gzip with `Vary: Accept-Encoding`.
+- **Conditional reads/gzip:** `/v1/top`, articles, `/v1/todos` and `/v1/todos/tags` support weak `ETag` revalidation and gzip with `Vary: Accept-Encoding`.
+- **CORS:** browser origins are restricted to `CORS_ORIGINS`; `OPTIONS` preflight returns `204` before auth and responses include `Vary: Origin`.
 - **Pagination/status:** list endpoints support `offset`/`limit`; `/v1/status` reports readiness without triggering scraping.
 - **Todo module:** persistence, validation, truncation, refresh and write permissions are described in [Todos](#todos).
 
@@ -423,6 +456,15 @@ go vet ./...
 go test ./...
 go build ./...
 ```
+
+## 1.6.0 changes
+
+- `/v1/todos` and `/v1/todos/tags` use a stable weak `ETag`, support `If-None-Match` → `304`, and return `Last-Modified`.
+- `generated_at` in those two indexes is now the store's last modification time instead of the request time.
+- Those indexes use `Cache-Control: private, no-cache`; mutable task/Markdown responses keep `no-store`.
+- Added CORS with a configurable origin allowlist (`CORS_ORIGINS`) and unauthenticated `OPTIONS` preflight returning `204`.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for migration details.
 
 ## 1.5.0 changes
 

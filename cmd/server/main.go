@@ -101,6 +101,27 @@ func parseAPIKeys(raw string) []string {
 	return keys
 }
 
+func parseCORSOrigins(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return append([]string(nil), api.DefaultCORSOrigins...)
+	}
+	parts := strings.Split(raw, ",")
+	origins := make([]string, 0, len(parts))
+	seen := make(map[string]bool, len(parts))
+	for _, part := range parts {
+		origin := strings.TrimSpace(part)
+		if origin == "" || origin == "*" || seen[origin] {
+			continue
+		}
+		seen[origin] = true
+		origins = append(origins, origin)
+	}
+	if len(origins) == 0 {
+		return append([]string(nil), api.DefaultCORSOrigins...)
+	}
+	return origins
+}
+
 func main() {
 	port := getenv("PORT", "8982")
 	refreshStr := getenv("REFRESH_INTERVAL", "30m")
@@ -130,6 +151,8 @@ func main() {
 
 	apiKeys := parseAPIKeys(os.Getenv("API_KEYS"))
 	protectHealth := parseBoolEnv("PROTECT_HEALTH", false)
+	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ORIGINS"))
+	log.Printf("CORS allowlist: %s", strings.Join(corsOrigins, ", "))
 	authEnabled := len(apiKeys) > 0
 	if !authEnabled {
 		log.Println("warning: API key auth disabled (API_KEYS not set); /v1 endpoints are unauthenticated")
@@ -187,9 +210,10 @@ func main() {
 		mux.Handle("/health", healthHandler)
 	}
 
+	handler := api.GzipMiddleware(api.CORS(corsOrigins)(mux))
 	srv := &http.Server{
 		Addr:              ":" + port,
-		Handler:           api.GzipMiddleware(mux),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
