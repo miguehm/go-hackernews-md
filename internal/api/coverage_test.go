@@ -341,13 +341,13 @@ func TestTodoRenderMarkdownTruncation(t *testing.T) {
 	tasks := seedTodoTasks(t, h)
 
 	h.maxMarkdown = 100
-	markdown, truncated := h.renderMarkdown(tasks, todo.Filter{Status: "all"}, todo.ComputeCounts(tasks))
+	markdown, truncated := h.renderMarkdown(tasks, todo.Filter{Status: "all"}, todo.ComputeCounts(tasks), h.nowTime())
 	if !truncated || !strings.Contains(markdown, "> Lista truncada.") {
 		t.Fatalf("truncated = %v, markdown = %s", truncated, markdown)
 	}
 
 	h.maxMarkdown = 10
-	markdown, truncated = h.renderMarkdown(nil, todo.Filter{}, todo.Counts{})
+	markdown, truncated = h.renderMarkdown(nil, todo.Filter{}, todo.Counts{}, h.nowTime())
 	if !truncated || !strings.Contains(markdown, "> Lista truncada.") {
 		t.Fatalf("fallback truncated = %v, markdown = %s", truncated, markdown)
 	}

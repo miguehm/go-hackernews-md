@@ -94,30 +94,13 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 		Limit:  limit,
 	}
 
-	data, err := json.Marshal(resp)
+	data, sizeTruncated, err := marshalWithin(indexMaxBytes, &resp, func() bool { return dropLast(&resp.Items) })
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
 		return
 	}
-	sizeTruncated := false
-	for len(data) > indexMaxBytes && len(resp.Items) > 0 {
-		resp.Items = resp.Items[:len(resp.Items)-1]
-		sizeTruncated = true
-		data, err = json.Marshal(resp)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
-			return
-		}
-	}
 	if len(data) > indexMaxBytes {
-		resp.Items = []store.IndexItem{}
-		resp.ReturnedCount = 0
 		sizeTruncated = true
-		data, err = json.Marshal(resp)
-		if err != nil {
-			writeError(w, http.StatusInternalServerError, "internal_error", "failed to encode response", "", nil)
-			return
-		}
 	}
 	resp.ReturnedCount = len(resp.Items)
 	resp.HasMore = offset+len(resp.Items) < total

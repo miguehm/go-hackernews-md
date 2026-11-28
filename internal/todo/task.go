@@ -172,6 +172,13 @@ func isDueSoon(due, today, limit string) bool {
 	return due >= today && due <= limit
 }
 
+// ValidTag reports whether tag is already in canonical form: lowercase
+// ASCII letters, digits, '_' or '-', starting with a letter or digit, and at
+// most MaxTagLength bytes long.
+func ValidTag(tag string) bool {
+	return len(tag) <= MaxTagLength && tagPattern.MatchString(tag)
+}
+
 func NormalizeTags(values []string) ([]string, error) {
 	out := make([]string, 0, len(values))
 	seen := make(map[string]bool, len(values))
@@ -180,7 +187,7 @@ func NormalizeTags(values []string) ([]string, error) {
 		if tag == "" {
 			continue
 		}
-		if len(tag) > MaxTagLength || !tagPattern.MatchString(tag) {
+		if !ValidTag(tag) {
 			return nil, validationError("tags", fmt.Sprintf("invalid tag %q", raw))
 		}
 		if !seen[tag] {

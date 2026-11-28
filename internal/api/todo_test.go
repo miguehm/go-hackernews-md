@@ -394,7 +394,7 @@ func TestTodoWritesForbidden(t *testing.T) {
 		if rr.Code != http.StatusForbidden {
 			t.Fatalf("%s status = %d, want 403", req.Method, rr.Code)
 		}
-		var body todoErrorBody
+		var body errorBody
 		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 			t.Fatalf("decode: %v", err)
 		}
@@ -445,7 +445,7 @@ func TestTodoInvalidRequests(t *testing.T) {
 			if rr.Code != tt.wantStatus {
 				t.Fatalf("status = %d, want %d; body = %s", rr.Code, tt.wantStatus, rr.Body.String())
 			}
-			var body todoErrorBody
+			var body errorBody
 			if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 				t.Fatalf("decode: %v", err)
 			}
@@ -467,7 +467,7 @@ func TestTodoMethodNotAllowed(t *testing.T) {
 	if rr.Header().Get("Allow") != http.MethodGet {
 		t.Fatalf("Allow = %q", rr.Header().Get("Allow"))
 	}
-	var body todoErrorBody
+	var body errorBody
 	if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}

@@ -16,8 +16,6 @@ type errorBody struct {
 	CurrentRevision   *int    `json:"current_revision,omitempty"`
 }
 
-type todoErrorBody = errorBody
-
 type errorOptions struct {
 	field           string
 	itemID          string
