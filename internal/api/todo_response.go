@@ -100,6 +100,6 @@ func (h *TodoHandler) writeMarkdown(w http.ResponseWriter, r *http.Request, mark
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {
-		_, _ = w.Write([]byte(markdown))
+		_, _ = w.Write([]byte(markdown)) //nolint:gosec // G705: text/markdown with nosniff, never rendered as HTML
 	}
 }

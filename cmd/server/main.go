@@ -27,9 +27,13 @@ var version = "dev"
 const shutdownTimeout = 5 * time.Second
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck(os.Getenv, os.Stderr))
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
-	if err := run(ctx, os.Getenv, os.Stderr); err != nil {
+	err := run(ctx, os.Getenv, os.Stderr)
+	stop()
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -53,7 +57,8 @@ func run(ctx context.Context, getenv func(string) string, stderr io.Writer) erro
 		logger.Warn("configuration", "warning", warning)
 	}
 
-	ln, err := net.Listen("tcp", ":"+cfg.Port)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(ctx, "tcp", ":"+cfg.Port)
 	if err != nil {
 		return fmt.Errorf("listen on :%s: %w", cfg.Port, err)
 	}
@@ -136,6 +141,38 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.L
 		logger.Warn("refresher did not stop before shutdown timeout")
 	}
 	return runErr
+}
+
+// healthcheck probes GET /health on the local server and returns the process
+// exit code (0 healthy, 1 otherwise). It exists for Docker HEALTHCHECK in the
+// distroless image, which has no curl or shell.
+func healthcheck(getenv func(string) string, stderr io.Writer) int {
+	cfg, err := config.Load(getenv)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://127.0.0.1:"+cfg.Port+"/health", nil)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	if cfg.ProtectHealth && cfg.AuthEnabled() {
+		req.Header.Set("Authorization", "Bearer "+cfg.APIKeys[0])
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(stderr, "unhealthy: status %d\n", resp.StatusCode)
+		return 1
+	}
+	return 0
 }
 
 func newLogger(w io.Writer, level slog.Level, format string) *slog.Logger {

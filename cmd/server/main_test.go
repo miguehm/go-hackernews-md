@@ -273,3 +273,23 @@ func TestRunStartsAndStops(t *testing.T) {
 		}
 	}
 }
+
+func TestHealthcheck(t *testing.T) {
+	base, _, _, stop := startServe(t, map[string]string{"API_KEYS": "k1,k2", "PROTECT_HEALTH": "true"})
+	defer func() { _ = stop() }()
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(base, "http://"))
+
+	if code := healthcheck(envFrom(map[string]string{"PORT": port, "API_KEYS": "k1,k2", "PROTECT_HEALTH": "true"}), io.Discard); code != 0 {
+		t.Fatalf("healthy server: exit %d, want 0", code)
+	}
+	var stderr bytes.Buffer
+	if code := healthcheck(envFrom(map[string]string{"PORT": port}), &stderr); code != 1 || !strings.Contains(stderr.String(), "401") {
+		t.Fatalf("missing key: exit %d (%s), want 1 with 401", code, stderr.String())
+	}
+	if code := healthcheck(envFrom(map[string]string{"PORT": "1"}), io.Discard); code != 1 {
+		t.Fatalf("nothing listening: exit %d, want 1", code)
+	}
+	if code := healthcheck(envFrom(map[string]string{"TOP_N": "0"}), io.Discard); code != 1 {
+		t.Fatalf("bad config: exit %d, want 1", code)
+	}
+}

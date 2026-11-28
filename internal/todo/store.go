@@ -328,7 +328,7 @@ func (s *Store) saveLocked() error {
 	if err := os.Rename(tmpName, s.file); err != nil {
 		return fmt.Errorf("replace todo store: %w", err)
 	}
-	if d, err := os.Open(dir); err == nil {
+	if d, err := os.Open(dir); err == nil { //nolint:gosec // G304: dir comes from server config, not user input
 		_ = d.Sync()
 		_ = d.Close()
 	}

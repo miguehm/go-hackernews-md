@@ -468,14 +468,20 @@ internal/todo/       # task model, tags, JSON store, Markdown rendering
 
 Key dependencies (see `go.mod` / `go.sum`): `github.com/go-shiori/go-readability`, `github.com/JohannesKaufmann/html-to-markdown/v2`, `golang.org/x/sync`.
 
-Verification:
+Verification (`make help` lists every target):
 
 ```bash
-gofmt -w .
-go vet ./...
-go test ./...
-go build ./...
+make check   # gofmt check, go vet, golangci-lint, go test -race, govulncheck
+make cover   # race tests with a coverage summary
+make build   # bin/server with the version from git describe
+make docker  # container image tagged with that version
 ```
+
+`make check` needs [`golangci-lint`](https://golangci-lint.run) v2 and `govulncheck` (`go install golang.org/x/vuln/cmd/govulncheck@latest`). Linters are configured in `.golangci.yml`. CI (`.github/workflows/ci.yml`) runs the same checks plus a Docker build on every push to `main` and on pull requests.
+
+`internal/api/contract_test.go` drives the real router through every endpoint and validates each request and response against `openapi.yaml`, so a change in the handlers or in the contract that makes them disagree fails the tests.
+
+The Docker image embeds the version (`--build-arg VERSION=...`) and declares a `HEALTHCHECK` that runs `/server healthcheck`, which probes the local `/health` (sending the first API key when `PROTECT_HEALTH` is on) and exits `0` or `1`.
 
 ## 1.6.0 changes
 

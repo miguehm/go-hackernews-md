@@ -119,11 +119,7 @@ func TestParseText(t *testing.T) {
 }
 
 func asValidationError(err error, target **ValidationError) bool {
-	if ve, ok := err.(*ValidationError); ok {
-		*target = ve
-		return true
-	}
-	return false
+	return errors.As(err, target)
 }
 
 func TestValidationErrorError(t *testing.T) {
@@ -131,8 +127,8 @@ func TestValidationErrorError(t *testing.T) {
 	if err.Error() != "text is required" {
 		t.Fatalf("Error() = %q, want %q", err.Error(), "text is required")
 	}
-	ve, ok := err.(*ValidationError)
-	if !ok || ve.Field != "text" {
+	var ve *ValidationError
+	if !errors.As(err, &ve) || ve.Field != "text" {
 		t.Fatalf("error = %+v, want *ValidationError with field text", err)
 	}
 }

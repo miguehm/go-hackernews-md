@@ -178,7 +178,9 @@ func (h *Handler) Article(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", strconv.Itoa(len(article.Markdown)))
 	w.WriteHeader(http.StatusOK)
 	if r.Method == http.MethodGet {
-		_, _ = w.Write(article.Markdown)
+		// Served as text/markdown with X-Content-Type-Options: nosniff (see
+		// securityHeaders), so browsers never render it as HTML.
+		_, _ = w.Write(article.Markdown) //nolint:gosec // G705: not HTML, nosniff is set
 	}
 }
 
@@ -192,7 +194,7 @@ func parseLimit(r *http.Request) int {
 	return parseLimitParam(r, defaultLimit, maxLimit)
 }
 
-func parseLimitParam(r *http.Request, def, max int) int {
+func parseLimitParam(r *http.Request, def, upper int) int {
 	values, ok := r.URL.Query()["limit"]
 	if !ok || len(values) != 1 {
 		return def
@@ -204,8 +206,8 @@ func parseLimitParam(r *http.Request, def, max int) int {
 	if n < minLimit {
 		return minLimit
 	}
-	if n > max {
-		return max
+	if n > upper {
+		return upper
 	}
 	return n
 }

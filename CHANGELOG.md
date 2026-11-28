@@ -10,6 +10,8 @@
 
 ### Security
 
+- `golang.org/x/net` v0.62.0 and `golang.org/x/text` v0.43.0 fix three vulnerabilities reachable from the HTML pipeline that parses arbitrary pages (GO-2026-6866, GO-2026-6860, GO-2026-5970).
+- Every response carries `X-Content-Type-Options: nosniff`, so browsers never reinterpret Markdown or JSON with third-party content as HTML.
 - The article scraper refuses to connect to non-public addresses (loopback, private, link-local, CGNAT, cloud metadata and reserved ranges), checked on the resolved IP at dial time. It only follows `http`/`https`, at most 5 redirects, and ignores proxy environment variables.
 - `content_error` now holds stable codes such as `fetch_failed`, `fetch_timeout` or `upstream_status_404` instead of raw Go errors, which could expose internal addresses. Details go to the server log.
 
@@ -19,6 +21,8 @@
 - One access-log line per request with `request_id`, `route`, `status`, `bytes` and `duration_ms`.
 - `X-Request-ID` on every response: a valid incoming value is reused, otherwise one is generated. It is allowed and exposed through CORS.
 - Panic recovery: a handler panic returns `500 internal_error` JSON and is logged with its stack trace.
+- `server healthcheck` subcommand and a Docker `HEALTHCHECK` for the distroless image; the image embeds its version through `--build-arg VERSION`.
+- Makefile (`make check`), `.golangci.yml`, GitHub Actions CI (gofmt, vet, golangci-lint, race tests, govulncheck, Docker build) and an OpenAPI contract test.
 - `HEAD /v1/top`, with the same headers as `GET` and no body.
 - `TOP_N` (default `20`) and `MAX_CONCURRENCY` (default `6`) environment variables.
 - `/v1/status` reports `last_refresh_error` and `last_refresh_error_at` when the latest refresh failed, including during warm-up.

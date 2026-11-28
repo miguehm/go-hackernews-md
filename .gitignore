@@ -1,1 +1,4 @@
 /data/
+/coverage.out
+/bin/
+.opencode/

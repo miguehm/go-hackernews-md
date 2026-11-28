@@ -154,13 +154,13 @@ func TestStoreConditionalUpdateAndDelete(t *testing.T) {
 		return nil
 	}); err == nil {
 		t.Fatal("stale UpdateIfRevision succeeded")
-	} else if conflict, ok := err.(*RevisionConflictError); !ok || conflict.CurrentRevision != 2 {
+	} else if conflict := (*RevisionConflictError)(nil); !errors.As(err, &conflict) || conflict.CurrentRevision != 2 {
 		t.Fatalf("conflict = %#v", err)
 	}
 
 	if err := st.DeleteIfRevision("1", []int{1}, false); err == nil {
 		t.Fatal("stale DeleteIfRevision succeeded")
-	} else if conflict, ok := err.(*RevisionConflictError); !ok || conflict.CurrentRevision != 2 {
+	} else if conflict := (*RevisionConflictError)(nil); !errors.As(err, &conflict) || conflict.CurrentRevision != 2 {
 		t.Fatalf("delete conflict = %#v", err)
 	}
 	if err := st.DeleteIfRevision("1", nil, true); err != nil {

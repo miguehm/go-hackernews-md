@@ -74,10 +74,10 @@ func NewRouter(d RouterDeps) http.Handler {
 
 	// Order matters: Recover wraps Gzip so a panic never leaves a partial
 	// response; AccessLog sits outside Recover to log the resulting 500.
-	return RequestID(
+	return securityHeaders(RequestID(
 		AccessLog(logger)(
 			Recover(logger)(
-				GzipMiddleware(CORS(d.CORSOrigins)(mux)))))
+				GzipMiddleware(CORS(d.CORSOrigins)(mux))))))
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {

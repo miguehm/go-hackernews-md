@@ -13,6 +13,16 @@ import (
 	"time"
 )
 
+// securityHeaders sets headers that are safe for every API response.
+// nosniff stops browsers from reinterpreting Markdown or JSON (which embed
+// third-party content) as HTML or script.
+func securityHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RequestIDHeader carries the request correlation id in both directions.
 const RequestIDHeader = "X-Request-ID"
 

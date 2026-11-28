@@ -1,6 +1,7 @@
 package todo
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +33,8 @@ func TestNormalizeDueDate(t *testing.T) {
 				t.Fatalf("error = %v, want err %v", err, tc.err)
 			}
 			if tc.err {
-				if ve, ok := err.(*ValidationError); !ok || ve.Field != "due_date" {
+				var ve *ValidationError
+				if !errors.As(err, &ve) || ve.Field != "due_date" {
 					t.Fatalf("error = %#v, want ValidationError{due_date}", err)
 				}
 				return
