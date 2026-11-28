@@ -172,9 +172,9 @@ Response fields:
 - `next_offset`: next `offset` to request when `has_more` is `true`, otherwise `null`
 - `items`: array of metadata items
 
-Because the server fetches 20 stories, `returned_count` is at most 20 even though `limit` accepts up to 30.
+By default the server fetches 20 stories (`TOP_N`), so `returned_count` is at most 20 even though `limit` accepts up to 30.
 
-Responses use weak `ETag` (`W/"..."`), `Last-Modified`, `Cache-Control: private, no-cache` and `Vary: Accept-Encoding`. Gzip is applied when the client sends `Accept-Encoding: gzip`.
+Responses use weak `ETag` (`W/"..."`), `Last-Modified`, `Cache-Control: private, no-cache` and `Vary: Accept-Encoding`. Gzip is applied when the client sends `Accept-Encoding: gzip` and the body is at least 256 bytes. `HEAD` returns the same headers as `GET` without a body.
 
 Example:
 

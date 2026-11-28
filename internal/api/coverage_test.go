@@ -35,7 +35,7 @@ func TestIndexRejectsNonGET(t *testing.T) {
 	h := New(readyStore(nil, nil), 1800)
 	rr := httptest.NewRecorder()
 	h.Index(rr, httptest.NewRequest(http.MethodPost, "/v1/top", nil))
-	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != http.MethodGet {
+	if rr.Code != http.StatusMethodNotAllowed || rr.Header().Get("Allow") != "GET, HEAD" {
 		t.Fatalf("status = %d, Allow = %q", rr.Code, rr.Header().Get("Allow"))
 	}
 	if !strings.Contains(rr.Body.String(), `"message":"method not allowed"`) {
@@ -422,5 +422,21 @@ func TestWriteTodoValidationErrorNonValidation(t *testing.T) {
 	writeTodoValidationError(rr, errors.New("boom"))
 	if rr.Code != http.StatusInternalServerError || !strings.Contains(rr.Body.String(), `"error":"internal_error"`) {
 		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body.String())
+	}
+}
+
+func TestIndexHEAD(t *testing.T) {
+	h := New(readyStore(nil, nil), 1800)
+	get := httptest.NewRecorder()
+	h.Index(get, httptest.NewRequest(http.MethodGet, "/v1/top", nil))
+	head := httptest.NewRecorder()
+	h.Index(head, httptest.NewRequest(http.MethodHead, "/v1/top", nil))
+	if head.Code != http.StatusOK || head.Body.Len() != 0 {
+		t.Fatalf("HEAD status = %d, body len = %d", head.Code, head.Body.Len())
+	}
+	for _, key := range []string{"ETag", "Content-Length", "Content-Type", "Last-Modified"} {
+		if head.Header().Get(key) != get.Header().Get(key) {
+			t.Errorf("HEAD %s = %q, GET %s = %q", key, head.Header().Get(key), key, get.Header().Get(key))
+		}
 	}
 }

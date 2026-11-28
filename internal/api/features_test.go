@@ -105,7 +105,7 @@ func TestArticleConditionalRequest(t *testing.T) {
 }
 
 func TestGzipMiddleware(t *testing.T) {
-	const body = `{"message":"` + "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" + `"}`
+	body := `{"message":"` + strings.Repeat("x", 1024) + `"}`
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		w.Header().Set("ETag", `"etag"`)

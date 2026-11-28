@@ -48,7 +48,7 @@ func (c *Client) TopStoryIDs(ctx context.Context) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("topstories: status %d", resp.StatusCode)
 	}
@@ -69,7 +69,7 @@ func (c *Client) Item(ctx context.Context, id int) (*Item, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("item %d: status %d", id, resp.StatusCode)
 	}

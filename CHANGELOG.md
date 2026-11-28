@@ -19,12 +19,15 @@
 - One access-log line per request with `request_id`, `route`, `status`, `bytes` and `duration_ms`.
 - `X-Request-ID` on every response: a valid incoming value is reused, otherwise one is generated. It is allowed and exposed through CORS.
 - Panic recovery: a handler panic returns `500 internal_error` JSON and is logged with its stack trace.
+- `HEAD /v1/top`, with the same headers as `GET` and no body.
 - `TOP_N` (default `20`) and `MAX_CONCURRENCY` (default `6`) environment variables.
 - `/v1/status` reports `last_refresh_error` and `last_refresh_error_at` when the latest refresh failed, including during warm-up.
 
 ### Changed
 
 - Configuration is loaded by `internal/config`; all invalid variables are reported at once, and invalid booleans now log a warning instead of being ignored silently.
+- Gzip skips bodies under 256 bytes (they would grow) and reuses writers and buffers through a pool.
+- `internal/api/todo.go` split into smaller files and duplicated response-trimming loops unified; no behavior change.
 - Log output is now JSON on stderr instead of plain text lines. Use `LOG_FORMAT=text` for the human-readable format.
 - The warm-up `503` uses a fixed `Retry-After: 15` instead of the full refresh interval.
 - The Hacker News client sends a `User-Agent`.

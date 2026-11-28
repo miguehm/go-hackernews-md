@@ -71,7 +71,7 @@ func TestRunListenError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	err = run(context.Background(), envFrom(map[string]string{"PORT": port, "DATA_DIR": t.TempDir()}), io.Discard)
 	if err == nil || !strings.Contains(err.Error(), "listen") {

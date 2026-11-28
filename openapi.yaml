@@ -22,7 +22,9 @@ info:
     - Los `ETag` son débiles (`W/"..."`); `Last-Modified` es informativo y en
       los índices de tareas corresponde a la última modificación del store.
     - Se acepta `Accept-Encoding: gzip`; la respuesta comprimida conserva el
-      mismo `ETag` débil y añade `Vary: Accept-Encoding`.
+      mismo `ETag` débil y añade `Vary: Accept-Encoding`. Los cuerpos de menos
+      de 256 bytes se envían sin comprimir.
+    - `/top` acepta también `HEAD` (mismas cabeceras que `GET`, sin cuerpo).
     - CORS: el allowlist se configura con `CORS_ORIGINS` (por defecto `web`,
       `http://localhost:5173`, `https://localhost` y `capacitor://localhost`).
       Las peticiones `OPTIONS` responden `204` sin autenticación. Se permiten

@@ -294,7 +294,7 @@ func (s *Store) saveLocked() error {
 		return fmt.Errorf("create temp todo store: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	updatedAt := s.updatedAt
 	if updatedAt.IsZero() {

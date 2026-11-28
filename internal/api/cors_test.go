@@ -108,7 +108,7 @@ func TestCORSWildcardIgnored(t *testing.T) {
 func TestCORSAndGzipVary(t *testing.T) {
 	handler := GzipMiddleware(CORS(testCORSOrigins)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("x", 128) + `"}`))
+		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("x", 1024) + `"}`))
 	})))
 	rr := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/v1/todos", nil)

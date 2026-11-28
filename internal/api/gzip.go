@@ -3,20 +3,48 @@ package api
 import (
 	"bytes"
 	"compress/gzip"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+const (
+	// gzipMinSize is the smallest body worth compressing: below it the gzip
+	// header and trailer (~20 bytes) make the response larger, not smaller.
+	gzipMinSize = 256
+	// maxPooledBuffer keeps unusually large buffers out of the pool so one
+	// big response does not pin memory forever.
+	maxPooledBuffer = 1 << 20
+)
+
+var (
+	bufferPool = sync.Pool{New: func() any { return new(bytes.Buffer) }}
+	gzipPool   = sync.Pool{New: func() any { return gzip.NewWriter(io.Discard) }}
+)
+
+func getBuffer() *bytes.Buffer {
+	buf := bufferPool.Get().(*bytes.Buffer)
+	buf.Reset()
+	return buf
+}
+
+func putBuffer(buf *bytes.Buffer) {
+	if buf.Cap() <= maxPooledBuffer {
+		bufferPool.Put(buf)
+	}
+}
 
 type bufferedResponse struct {
 	header      http.Header
-	body        bytes.Buffer
+	body        *bytes.Buffer
 	status      int
 	wroteHeader bool
 }
 
 func newBufferedResponse() *bufferedResponse {
-	return &bufferedResponse{header: make(http.Header)}
+	return &bufferedResponse{header: make(http.Header), body: getBuffer()}
 }
 
 func (b *bufferedResponse) Header() http.Header {
@@ -41,6 +69,7 @@ func (b *bufferedResponse) Write(data []byte) (int, error) {
 func GzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		buffered := newBufferedResponse()
+		defer putBuffer(buffered.body)
 		next.ServeHTTP(buffered, r)
 		status := buffered.status
 		if status == 0 {
@@ -58,16 +87,19 @@ func GzipMiddleware(next http.Handler) http.Handler {
 			status != http.StatusNoContent &&
 			status != http.StatusNotModified &&
 			r.Method != http.MethodHead &&
-			len(body) > 0 &&
+			len(body) >= gzipMinSize &&
 			buffered.header.Get("Content-Encoding") == "" &&
 			acceptsGzip(r) &&
 			compressible
 
 		if shouldCompress {
-			var compressed bytes.Buffer
-			writer := gzip.NewWriter(&compressed)
+			compressed := getBuffer()
+			defer putBuffer(compressed)
+			writer := gzipPool.Get().(*gzip.Writer)
+			writer.Reset(compressed)
 			_, _ = writer.Write(body)
 			_ = writer.Close()
+			gzipPool.Put(writer)
 			body = compressed.Bytes()
 			buffered.header.Set("Content-Encoding", "gzip")
 			buffered.header.Set("Content-Length", strconv.Itoa(len(body)))

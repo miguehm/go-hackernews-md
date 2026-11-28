@@ -78,12 +78,13 @@ func (s *Service) Refresh(ctx context.Context) error {
 
 	items := make([]store.IndexItem, len(ids))
 	articles := make(map[string]*store.Article, len(ids))
+	// errgroup is used only as a bounded worker pool: processOne never fails
+	// (errors become per-item content_status), so Wait always returns nil.
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(s.cfg.MaxConcurrency)
 	var mu sync.Mutex
 
 	for i, id := range ids {
-		i, id := i, id
 		g.Go(func() error {
 			idStr := strconv.Itoa(id)
 			var prevItem *store.IndexItem

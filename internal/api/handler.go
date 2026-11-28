@@ -53,8 +53,8 @@ type indexPageResponse struct {
 }
 
 func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.Header().Set("Allow", http.MethodGet)
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", "", nil)
 		return
 	}
@@ -133,7 +133,9 @@ func (h *Handler) Index(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(data)
+	if r.Method == http.MethodGet {
+		_, _ = w.Write(data)
+	}
 }
 
 func (h *Handler) Article(w http.ResponseWriter, r *http.Request) {
