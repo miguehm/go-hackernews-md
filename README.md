@@ -483,6 +483,17 @@ make docker  # container image tagged with that version
 
 The Docker image embeds the version (`--build-arg VERSION=...`) and declares a `HEALTHCHECK` that runs `/server healthcheck`, which probes the local `/health` (sending the first API key when `PROTECT_HEALTH` is on) and exits `0` or `1`.
 
+## 1.7.0 changes
+
+- Task responses again carry `ETag: "<revision>"`, so the value can be sent back in `If-Match` as documented.
+- Security: SSRF guard in the scraper, stable `content_error` codes, `X-Content-Type-Options: nosniff`, Go 1.27.4 and patched `x/net`/`x/text`.
+- Observability: JSON logs (`LOG_LEVEL`, `LOG_FORMAT`), per-request access logs, `X-Request-ID`, panic recovery, and `last_refresh_error` in `/v1/status`.
+- Configuration is validated at startup; new `TOP_N` and `MAX_CONCURRENCY`.
+- `HEAD /v1/top`, a 15-second warm-up `Retry-After`, gzip only for bodies of 256 bytes or more.
+- Tooling: `make check`, golangci-lint, GitHub Actions CI, an OpenAPI contract test and a Docker `HEALTHCHECK`.
+
+See [`CHANGELOG.md`](./CHANGELOG.md) for migration details.
+
 ## 1.6.0 changes
 
 - `/v1/todos` and `/v1/todos/tags` use a stable weak `ETag`, support `If-None-Match` → `304`, and return `Last-Modified`.

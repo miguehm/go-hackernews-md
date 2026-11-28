@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: hnmd API — KindleHome (file-based)
-  version: 1.6.0
+  version: 1.7.0
   license:
     name: MIT
     url: https://opensource.org/licenses/MIT

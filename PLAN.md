@@ -1,6 +1,36 @@
+# Plan — hnmd 1.7.0
+
+Estado: 1.7.0 completado, verificado y publicado (2026-11-27). Los planes 1.6.0 y 1.5.0 se conservan más abajo como histórico.
+
+## Objetivo
+
+Endurecer el backend 1.6.0 sin cambiar el contrato salvo donde estaba roto: bugs de contrato y robustez, seguridad, observabilidad, mantenibilidad y tooling.
+
+## Fases
+
+- [x] F1 — Bugs: ETag de tareas igual a la revisión; duraciones validadas (> 0); el apagado cancela el refresh en curso.
+- [x] F2 — Seguridad: guard anti-SSRF en el scraper (IP resuelta al conectar, http/https, ≤ 5 redirects, sin proxy); `content_error` con códigos estables; `User-Agent` en el cliente HN; `Retry-After` de 15 s.
+- [x] F3 — Observabilidad: `slog` JSON, access log, `X-Request-ID`, recover, `last_refresh_error` en `/v1/status`.
+- [x] F4 — Mantenibilidad: `internal/config`, `api.NewRouter`, `run`/`serve` testeables, `todo.go` dividido, `marshalWithin`, `todo.ValidTag`, un reloj por request, gzip con pool y umbral, `HEAD /v1/top`.
+- [x] F5 — Tooling: `.golangci.yml`, Makefile, CI, test de contrato OpenAPI, healthcheck de Docker, `nosniff`, Go 1.27.4 y `x/net`/`x/text` parcheados.
+
+## Fuera de alcance
+
+- `ErrTaskLimit` sigue respondiendo `400`; cambiarlo a `409`/`422` rompe el contrato (candidato a 2.0).
+- Endpoint `/metrics`.
+
+## Verificación
+
+- [x] `make check` (gofmt, vet, golangci-lint, `go test -race`, govulncheck) en local.
+- [x] CI verde en GitHub Actions.
+- [x] Servidor real: 20/20 artículos capturados con el guard activo, logs JSON, `X-Request-ID`, apagado limpio.
+- [x] Imagen Docker: `HEALTHCHECK` en `healthy`, versión embebida.
+
+---
+
 # Plan — hnmd 1.6.0
 
-Estado: backend 1.6.0 completado y verificado (2026-11-27). El plan 1.5.0 se conserva más abajo como histórico.
+Estado: backend 1.6.0 completado y verificado (2026-11-27).
 
 ## Objetivo
 

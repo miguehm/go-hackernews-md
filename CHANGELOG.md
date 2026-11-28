@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.7.0 — 2026-11-27
+
+Hardening release: security, observability, tooling and two contract bugs. No endpoint was removed or renamed.
 
 ### Fixed
 
@@ -40,6 +42,15 @@
 ### Migration for clients
 
 - Treat `content_error` as an opaque code; the previous free-form text (`fetch: ...`, `item unavailable`) is gone.
+- Send the task `ETag` back verbatim in `If-Match`; it is the revision again (`"3"` or `W/"3"`). Clients that worked around the old hash can drop the workaround.
+- Responses under 256 bytes are no longer gzipped; `Vary: Accept-Encoding` is still sent.
+
+### Migration for operators
+
+- Logs are JSON on stderr; set `LOG_FORMAT=text` to keep plain lines.
+- `REFRESH_INTERVAL`, `SCRAPE_TIMEOUT`, `HN_TIMEOUT`, `TOP_N`, `MAX_CONCURRENCY`, `LOG_LEVEL` and `LOG_FORMAT` now fail startup when invalid; all problems are reported at once.
+- The scraper no longer fetches private or internal addresses. If you relied on capturing intranet pages, they now show `content_error: fetch_blocked`.
+- Building from source requires Go 1.27.4.
 
 ## 1.6.0 — 2026-11-27
 
