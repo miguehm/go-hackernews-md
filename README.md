@@ -92,6 +92,14 @@ Environment variables read at startup:
 | `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. |
 | `TODO_ALLOW_INSECURE_WRITES` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | Allow todo writes when `API_KEYS` is unset. Off by default. |
 | `PUBLIC_BASE_URL` | _(empty)_ | URL | Optional external base URL used for absolute `hn_url` values in `/v1/todos/top`. |
+| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` | Minimum log level. Invalid values cause startup failure. |
+| `LOG_FORMAT` | `json` | `json`, `text` | Log output format on stderr. Invalid values cause startup failure. |
+
+### Logging
+
+Logs are structured (`log/slog`) and written to stderr, as JSON by default. Every request produces one `request` line with `request_id`, `method`, `path`, `route` (the matched pattern), `status`, `bytes` and `duration_ms`. Server errors are logged at `ERROR`, warm-up `503`s at `WARN` and `/health` probes at `DEBUG`. A panic in a handler is turned into a `500 internal_error` JSON response and logged with its stack trace.
+
+Every response carries `X-Request-ID`. A valid incoming `X-Request-ID` (`[A-Za-z0-9._-]{1,64}`) is reused; otherwise the server generates one.
 | `CORS_ORIGINS` | `web,http://localhost:5173,https://localhost,capacitor://localhost` | Comma-separated origins | Browser allowlist. Overrides the defaults when set; `*` is ignored. `OPTIONS` preflight is answered with `204` before auth. |
 
 > **Security:** when authentication is enabled, run behind HTTPS so the bearer key is not exposed in transit. Keys are compared in constant time. If `API_KEYS` is unset, auth is disabled and a startup warning is logged.
@@ -118,7 +126,7 @@ The canonical contract is [`openapi.yaml`](./openapi.yaml) (OpenAPI 3.0.3). The 
 
 Browser clients are limited to the origins in `CORS_ORIGINS`. For an allowed
 origin the server returns `Access-Control-Allow-Origin` and exposes `ETag`,
-`Retry-After` and `Location`. Preflight requests are answered with `204` before
+`Retry-After`, `Location` and `X-Request-ID`. Preflight requests are answered with `204` before
 authentication:
 
 ```bash
@@ -128,8 +136,8 @@ curl -i -X OPTIONS http://localhost:8982/v1/todos/tasks \
   -H 'Access-Control-Request-Headers: authorization,content-type,if-match'
 # 204 No Content
 # Access-Control-Allow-Methods: GET, HEAD, POST, PATCH, DELETE, OPTIONS
-# Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, If-None-Match
-# Access-Control-Expose-Headers: ETag, Retry-After, Location
+# Access-Control-Allow-Headers: Authorization, Content-Type, If-Match, If-None-Match, X-Request-ID
+# Access-Control-Expose-Headers: ETag, Retry-After, Location, X-Request-ID
 # Vary: Origin
 ```
 
@@ -256,6 +264,8 @@ curl -H "Authorization: Bearer <key>" https://hnmd.miguehm.com/v1/status
 ```
 
 `ready` is `false` until the first Hacker News snapshot is available. The `snapshot_*` fields are omitted when no snapshot exists yet.
+
+When the latest refresh failed, the response also includes `last_refresh_error` (`hn_unavailable` or `refresh_timeout`) and `last_refresh_error_at`. They are omitted after the next successful refresh, and they also appear during warm-up, so `ready: false` plus `last_refresh_error` means the first refresh is failing.
 
 ### `GET /top` (deprecated)
 

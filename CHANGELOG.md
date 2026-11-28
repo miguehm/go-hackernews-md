@@ -13,8 +13,17 @@
 - The article scraper refuses to connect to non-public addresses (loopback, private, link-local, CGNAT, cloud metadata and reserved ranges), checked on the resolved IP at dial time. It only follows `http`/`https`, at most 5 redirects, and ignores proxy environment variables.
 - `content_error` now holds stable codes such as `fetch_failed`, `fetch_timeout` or `upstream_status_404` instead of raw Go errors, which could expose internal addresses. Details go to the server log.
 
+### Added
+
+- Structured logging with `log/slog` (JSON by default), configured with `LOG_LEVEL` and `LOG_FORMAT`.
+- One access-log line per request with `request_id`, `route`, `status`, `bytes` and `duration_ms`.
+- `X-Request-ID` on every response: a valid incoming value is reused, otherwise one is generated. It is allowed and exposed through CORS.
+- Panic recovery: a handler panic returns `500 internal_error` JSON and is logged with its stack trace.
+- `/v1/status` reports `last_refresh_error` and `last_refresh_error_at` when the latest refresh failed, including during warm-up.
+
 ### Changed
 
+- Log output is now JSON on stderr instead of plain text lines. Use `LOG_FORMAT=text` for the human-readable format.
 - The warm-up `503` uses a fixed `Retry-After: 15` instead of the full refresh interval.
 - The Hacker News client sends a `User-Agent`.
 

@@ -46,6 +46,8 @@ func (h *StatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		SnapshotGeneratedAt    *string `json:"snapshot_generated_at,omitempty"`
 		NextRefreshAt          *string `json:"next_refresh_at,omitempty"`
 		RefreshIntervalSeconds *int    `json:"refresh_interval_seconds,omitempty"`
+		LastRefreshError       *string `json:"last_refresh_error,omitempty"`
+		LastRefreshErrorAt     *string `json:"last_refresh_error_at,omitempty"`
 		TodoCount              int     `json:"todo_count"`
 		ServerTime             string  `json:"server_time"`
 	}{
@@ -59,6 +61,11 @@ func (h *StatusHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		resp.SnapshotGeneratedAt = &index.GeneratedAt
 		resp.NextRefreshAt = index.NextRefreshAt
 		resp.RefreshIntervalSeconds = index.RefreshIntervalSeconds
+	}
+	if refreshErr, ok := h.hn.LastRefreshError(); ok {
+		at := refreshErr.At.UTC().Format(time.RFC3339)
+		resp.LastRefreshError = &refreshErr.Message
+		resp.LastRefreshErrorAt = &at
 	}
 	if h.todos != nil {
 		resp.TodoCount = h.todos.Count()

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -66,7 +66,7 @@ func (s *Store) load() error {
 		if backupErr != nil {
 			return fmt.Errorf("read todo store: %w", err)
 		}
-		log.Printf("warning: todo store unreadable, using backup: %v", err)
+		slog.Warn("todo store unreadable, using backup", "file", s.file, "error", err)
 		data = backup
 	}
 
@@ -76,7 +76,7 @@ func (s *Store) load() error {
 		if backupErr != nil || json.Unmarshal(backup, &file) != nil {
 			return fmt.Errorf("decode todo store: %w", err)
 		}
-		log.Printf("warning: todo store corrupt, using backup")
+		slog.Warn("todo store corrupt, using backup", "file", s.file, "error", err)
 	}
 	if file.SchemaVersion != 1 {
 		return fmt.Errorf("unsupported todo store schema version %d", file.SchemaVersion)

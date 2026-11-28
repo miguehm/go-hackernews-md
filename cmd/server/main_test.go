@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,5 +152,36 @@ func TestParseDurationEnv(t *testing.T) {
 				t.Fatalf("got %s, want %s", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewLogger(t *testing.T) {
+	var buf bytes.Buffer
+	logger, err := newLogger(&buf, "warn", "")
+	if err != nil {
+		t.Fatalf("newLogger: %v", err)
+	}
+	logger.Info("hidden")
+	logger.Warn("shown", "k", "v")
+	out := buf.String()
+	if strings.Contains(out, "hidden") || !strings.Contains(out, `"msg":"shown"`) || !strings.Contains(out, `"k":"v"`) {
+		t.Fatalf("json/warn output = %q", out)
+	}
+
+	buf.Reset()
+	logger, err = newLogger(&buf, "", "text")
+	if err != nil {
+		t.Fatalf("newLogger text: %v", err)
+	}
+	logger.Info("hello")
+	if !strings.Contains(buf.String(), "msg=hello") {
+		t.Fatalf("text output = %q", buf.String())
+	}
+
+	if _, err := newLogger(&buf, "loud", ""); err == nil {
+		t.Fatal("want error for invalid LOG_LEVEL")
+	}
+	if _, err := newLogger(&buf, "", "xml"); err == nil {
+		t.Fatal("want error for invalid LOG_FORMAT")
 	}
 }

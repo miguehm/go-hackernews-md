@@ -56,16 +56,24 @@ type Article struct {
 	UpdatedAt         time.Time
 }
 
+// Snapshot is immutable once passed to Store.Set: readers share the pointer
+// returned by Current, so never mutate a published snapshot in place.
 type Snapshot struct {
-	Index     IndexResponse
-	Articles  map[string]*Article
-	Ready     bool
-	LastError string
+	Index    IndexResponse
+	Articles map[string]*Article
+	Ready    bool
+}
+
+// RefreshError describes the most recent failed refresh.
+type RefreshError struct {
+	Message string
+	At      time.Time
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	snapshot *Snapshot
+	mu         sync.RWMutex
+	snapshot   *Snapshot
+	refreshErr *RefreshError
 }
 
 func New() *Store {
@@ -76,6 +84,29 @@ func (s *Store) Set(snap *Snapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.snapshot = snap
+	if snap != nil && snap.Ready {
+		s.refreshErr = nil
+	}
+}
+
+// RecordRefreshError remembers a failed refresh until the next successful
+// Set. It works before the first snapshot exists, so warm-up failures are
+// visible in /v1/status.
+func (s *Store) RecordRefreshError(message string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refreshErr = &RefreshError{Message: message, At: at.UTC()}
+}
+
+// LastRefreshError returns the latest refresh failure since the last
+// successful refresh, if any.
+func (s *Store) LastRefreshError() (RefreshError, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.refreshErr == nil {
+		return RefreshError{}, false
+	}
+	return *s.refreshErr, true
 }
 
 func (s *Store) GetIndex() (*IndexResponse, bool) {

@@ -26,9 +26,12 @@ info:
     - CORS: el allowlist se configura con `CORS_ORIGINS` (por defecto `web`,
       `http://localhost:5173`, `https://localhost` y `capacitor://localhost`).
       Las peticiones `OPTIONS` responden `204` sin autenticación. Se permiten
-      `Authorization`, `Content-Type`, `If-Match` e `If-None-Match`; se exponen
-      `ETag`, `Retry-After` y `Location`. Las respuestas CORS añaden
-      `Vary: Origin`.
+      `Authorization`, `Content-Type`, `If-Match`, `If-None-Match` y
+      `X-Request-ID`; se exponen `ETag`, `Retry-After`, `Location` y
+      `X-Request-ID`. Las respuestas CORS añaden `Vary: Origin`.
+    - Toda respuesta incluye `X-Request-ID`. Si el cliente envía uno válido
+      (`[A-Za-z0-9._-]{1,64}`) se reutiliza; si no, el servidor genera uno. Sirve
+      para correlacionar con los logs del servidor.
     - Un `404` NO implica borrar la copia local ya descargada.
     - Límites: índice ≤ 128 KiB, artículo ≤ 512 KiB. Respuestas mayores se
       descartan como `too_large`.
@@ -1303,6 +1306,16 @@ components:
         refresh_interval_seconds:
           type: integer
           nullable: true
+        last_refresh_error:
+          type: string
+          description: |
+            Código estable del último refresco fallido desde el último exitoso
+            (`hn_unavailable`, `refresh_timeout`). Se omite si no hay error. Puede
+            aparecer con `ready: false` cuando falla el arranque.
+        last_refresh_error_at:
+          type: string
+          format: date-time
+          description: Momento del último refresco fallido. Se omite si no hay error.
         todo_count:
           type: integer
           minimum: 0

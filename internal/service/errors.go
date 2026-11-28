@@ -26,7 +26,17 @@ const (
 	codeConvertFailed      = "convert_failed"
 	codeTooLarge           = "too_large"
 	codeUpstreamStatusPref = "upstream_status_"
+	codeRefreshTimeout     = "refresh_timeout"
 )
+
+// refreshErrorCode maps a failed Refresh to a stable code for /v1/status.
+func refreshErrorCode(err error) string {
+	var netErr net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netErr) && netErr.Timeout() {
+		return codeRefreshTimeout
+	}
+	return codeHNUnavailable
+}
 
 func fetchErrorCode(err error) string {
 	var statusErr *scraper.StatusError

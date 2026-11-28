@@ -3,7 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -52,7 +53,7 @@ func parseIntEnv(key string, def int) int {
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
-		log.Printf("warning: invalid %s %q: %v; using %d", key, v, err, def)
+		slog.Warn("invalid integer env var, using default", "key", key, "value", v, "error", err, "default", def)
 		return def
 	}
 	return n
@@ -79,7 +80,7 @@ func loadLocationEnv(key string, def *time.Location) *time.Location {
 	}
 	location, err := time.LoadLocation(raw)
 	if err != nil {
-		log.Printf("warning: invalid %s %q: %v; using UTC", key, raw, err)
+		slog.Warn("invalid timezone env var, using UTC", "key", key, "value", raw, "error", err)
 		return time.UTC
 	}
 	return location
@@ -138,19 +139,51 @@ func parseCORSOrigins(raw string) []string {
 	return origins
 }
 
+// newLogger builds the process logger from LOG_LEVEL (debug, info, warn,
+// error; default info) and LOG_FORMAT (json or text; default json).
+func newLogger(w io.Writer, level, format string) (*slog.Logger, error) {
+	var lvl slog.Level
+	if strings.TrimSpace(level) != "" {
+		if err := lvl.UnmarshalText([]byte(strings.TrimSpace(level))); err != nil {
+			return nil, fmt.Errorf("invalid LOG_LEVEL %q: %w", level, err)
+		}
+	}
+	opts := &slog.HandlerOptions{Level: lvl}
+	switch strings.ToLower(strings.TrimSpace(format)) {
+	case "", "json":
+		return slog.New(slog.NewJSONHandler(w, opts)), nil
+	case "text":
+		return slog.New(slog.NewTextHandler(w, opts)), nil
+	default:
+		return nil, fmt.Errorf("invalid LOG_FORMAT %q: want json or text", format)
+	}
+}
+
+func fatal(msg string, err error) {
+	slog.Error(msg, "error", err)
+	os.Exit(1)
+}
+
 func main() {
+	logger, err := newLogger(os.Stderr, os.Getenv("LOG_LEVEL"), os.Getenv("LOG_FORMAT"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+	slog.SetDefault(logger)
+
 	port := getenv("PORT", "8982")
 	refreshInterval, err := parseDurationEnv("REFRESH_INTERVAL", "30m")
 	if err != nil {
-		log.Fatal(err)
+		fatal("invalid configuration", err)
 	}
 	scrapeTimeout, err := parseDurationEnv("SCRAPE_TIMEOUT", "10s")
 	if err != nil {
-		log.Fatal(err)
+		fatal("invalid configuration", err)
 	}
 	hnTimeout, err := parseDurationEnv("HN_TIMEOUT", "10s")
 	if err != nil {
-		log.Fatal(err)
+		fatal("invalid configuration", err)
 	}
 
 	cfg := service.Config{
@@ -173,10 +206,10 @@ func main() {
 	apiKeys := parseAPIKeys(os.Getenv("API_KEYS"))
 	protectHealth := parseBoolEnv("PROTECT_HEALTH", false)
 	corsOrigins := parseCORSOrigins(os.Getenv("CORS_ORIGINS"))
-	log.Printf("CORS allowlist: %s", strings.Join(corsOrigins, ", "))
+	slog.Info("cors allowlist", "origins", corsOrigins)
 	authEnabled := len(apiKeys) > 0
 	if !authEnabled {
-		log.Println("warning: API key auth disabled (API_KEYS not set); /v1 endpoints are unauthenticated")
+		slog.Warn("API key auth disabled (API_KEYS not set); /v1 endpoints are unauthenticated")
 	}
 
 	dataDir := getenv("DATA_DIR", "./data")
@@ -185,9 +218,9 @@ func main() {
 	todoAllowInsecureWrites := parseBoolEnv("TODO_ALLOW_INSECURE_WRITES", false)
 	todoStore, err := todo.NewStore(todoFile, todoMaxTasks)
 	if err != nil {
-		log.Fatalf("failed to load todo store: %v", err)
+		fatal("failed to load todo store", err)
 	}
-	log.Printf("todo store loaded from %s", todoFile)
+	slog.Info("todo store loaded", "file", todoFile, "tasks", todoStore.Count())
 	todoLocation := loadLocationEnv("TODO_TIMEZONE", time.UTC)
 	todoHandler := api.NewTodoHandlerWithLocation(todoStore, os.Getenv("PUBLIC_BASE_URL"), authEnabled || todoAllowInsecureWrites, todoLocation)
 
@@ -231,10 +264,16 @@ func main() {
 		mux.Handle("/health", healthHandler)
 	}
 
-	handler := api.GzipMiddleware(api.CORS(corsOrigins)(mux))
+	// Order matters: Recover wraps Gzip so a panic never leaves a partial
+	// response; AccessLog sits outside Recover to log the resulting 500.
+	handler := api.RequestID(
+		api.AccessLog(logger)(
+			api.Recover(logger)(
+				api.GzipMiddleware(api.CORS(corsOrigins)(mux)))))
 	srv := &http.Server{
 		Addr:              ":" + port,
 		Handler:           handler,
+		ErrorLog:          slog.NewLogLogger(logger.Handler(), slog.LevelWarn),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       15 * time.Second,
 		WriteTimeout:      30 * time.Second,
@@ -242,20 +281,22 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("listening on :%s (refresh every %s)", port, refreshInterval)
+		slog.Info("listening", "addr", srv.Addr, "refresh_interval", refreshInterval.String(), "version", buildVersion())
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("server error: %v", err)
+			fatal("server error", err)
 		}
 	}()
 
 	<-ctx.Done()
-	log.Println("shutting down...")
+	slog.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_ = srv.Shutdown(shutdownCtx)
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Warn("http shutdown incomplete", "error", err)
+	}
 	select {
 	case <-refresherDone:
 	case <-shutdownCtx.Done():
-		log.Println("warning: refresher did not stop before shutdown timeout")
+		slog.Warn("refresher did not stop before shutdown timeout")
 	}
 }

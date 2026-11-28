@@ -15,8 +15,8 @@ var DefaultCORSOrigins = []string{
 
 const (
 	corsAllowMethods  = "GET, HEAD, POST, PATCH, DELETE, OPTIONS"
-	corsAllowHeaders  = "Authorization, Content-Type, If-Match, If-None-Match"
-	corsExposeHeaders = "ETag, Retry-After, Location"
+	corsAllowHeaders  = "Authorization, Content-Type, If-Match, If-None-Match, X-Request-ID"
+	corsExposeHeaders = "ETag, Retry-After, Location, X-Request-ID"
 	corsMaxAge        = "600"
 )
 

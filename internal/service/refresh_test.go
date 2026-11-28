@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -311,16 +312,22 @@ func TestProcessOne(t *testing.T) {
 func TestRecordRefreshError(t *testing.T) {
 	st := store.New()
 	svc := &Service{store: st}
-	svc.recordRefreshError(errors.New("boom"))
-	if _, ok := st.Current(); ok {
-		t.Fatal("no-op expected when there is no snapshot")
+	svc.recordRefreshError(errors.New("fetch top stories: dial udp 10.0.0.2:53: refused"))
+	if got, ok := st.LastRefreshError(); !ok || got.Message != codeHNUnavailable || got.At.IsZero() {
+		t.Fatalf("LastRefreshError = %+v, %v; want %q before first snapshot", got, ok, codeHNUnavailable)
 	}
 
 	st.Set(&store.Snapshot{Ready: true, Index: store.IndexResponse{SchemaVersion: 1, GeneratedAt: "when"}})
-	svc.recordRefreshError(errors.New("boom"))
+	if _, ok := st.LastRefreshError(); ok {
+		t.Fatal("a successful snapshot must clear the refresh error")
+	}
+	svc.recordRefreshError(fmt.Errorf("fetch top stories: %w", context.DeadlineExceeded))
 	snap, ok := st.Current()
-	if !ok || snap.LastError != "boom" || snap.Index.GeneratedAt != "when" {
-		t.Fatalf("snapshot = %+v, %v", snap, ok)
+	if !ok || snap.Index.GeneratedAt != "when" {
+		t.Fatalf("snapshot = %+v, %v; want previous snapshot kept", snap, ok)
+	}
+	if got, ok := st.LastRefreshError(); !ok || got.Message != codeRefreshTimeout {
+		t.Fatalf("LastRefreshError = %+v, %v", got, ok)
 	}
 }
 

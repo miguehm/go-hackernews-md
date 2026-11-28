@@ -5,7 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
-	"log"
+	"log/slog"
 	"strconv"
 	"strings"
 	"sync"
@@ -120,14 +120,14 @@ func (s *Service) Refresh(ctx context.Context) error {
 		Ready:    true,
 	}
 	s.store.Set(snap)
-	log.Printf("refresh completed: %d items in %s", len(items), time.Since(start))
+	slog.Info("refresh completed", "items", len(items), "duration", time.Since(start))
 	return nil
 }
 
 func (s *Service) processOne(ctx context.Context, rank int, id int, prevItem *store.IndexItem, prevArticle *store.Article) (store.IndexItem, *store.Article) {
 	it, err := s.hn.Item(ctx, id)
 	if err != nil {
-		log.Printf("item %d: hn item: %v", id, err)
+		slog.Warn("hn item fetch failed", "item_id", id, "error", err)
 		if prevItem != nil && prevArticle != nil {
 			return retainedItem(rank, id, prevItem, prevArticle), prevArticle
 		}
@@ -150,7 +150,7 @@ func (s *Service) processOne(ctx context.Context, rank int, id int, prevItem *st
 	case it.URL != "":
 		fetched, code, fetchErr := s.fetchBody(ctx, it.URL)
 		if fetchErr != nil {
-			log.Printf("item %d: %s %s: %v", id, code, it.URL, fetchErr)
+			slog.Warn("article capture failed", "item_id", id, "code", code, "url", it.URL, "error", fetchErr)
 			if prevArticle == nil {
 				return errorWithMetadata(item, code), nil
 			}
@@ -249,19 +249,15 @@ func (s *Service) refreshOnce(ctx context.Context, label string) {
 		if ctx.Err() != nil {
 			return
 		}
-		log.Printf("%s error: %v", label, err)
+		slog.Error("refresh failed", "phase", label, "error", err)
 		s.recordRefreshError(err)
 	}
 }
 
+// recordRefreshError stores a client-safe code for /v1/status; the full
+// error is logged by the caller.
 func (s *Service) recordRefreshError(err error) {
-	prev, ok := s.store.Current()
-	if !ok {
-		return
-	}
-	next := *prev
-	next.LastError = err.Error()
-	s.store.Set(&next)
+	s.store.RecordRefreshError(refreshErrorCode(err), time.Now())
 }
 
 func indexItemFromHN(rank int, id int, it *hn.Item) store.IndexItem {
