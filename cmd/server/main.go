@@ -113,11 +113,11 @@ func serve(ctx context.Context, cfg config.Config, logger *slog.Logger, ln net.L
 	refreshCtx, stopRefresh := context.WithCancel(ctx)
 	defer stopRefresh()
 	refresherDone := ref.StartRefresher(refreshCtx)
+	// The listener is already bound, so log before Serve: logging inside the
+	// goroutine could lose the line if shutdown wins the race.
+	logger.Info("listening", "addr", ln.Addr().String(), "refresh_interval", cfg.RefreshInterval.String(), "version", buildVersion())
 	serveErr := make(chan error, 1)
-	go func() {
-		logger.Info("listening", "addr", ln.Addr().String(), "refresh_interval", cfg.RefreshInterval.String(), "version", buildVersion())
-		serveErr <- srv.Serve(ln)
-	}()
+	go func() { serveErr <- srv.Serve(ln) }()
 
 	var runErr error
 	select {
@@ -162,7 +162,9 @@ func healthcheck(getenv func(string) string, stderr io.Writer) int {
 	if cfg.ProtectHealth && cfg.AuthEnabled() {
 		req.Header.Set("Authorization", "Bearer "+cfg.APIKeys[0])
 	}
-	resp, err := http.DefaultClient.Do(req)
+	// One-shot probe: no keep-alive, so no idle connection outlives it.
+	client := &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1

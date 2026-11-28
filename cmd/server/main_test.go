@@ -105,13 +105,17 @@ func startServe(t *testing.T, env map[string]string) (base string, ref *fakeRefr
 		select {
 		case err := <-done:
 			return err
-		case <-time.After(3 * time.Second):
+		case <-time.After(shutdownTimeout + 2*time.Second):
 			t.Fatal("serve did not return after cancel")
 			return nil
 		}
 	}
 	return "http://" + ln.Addr().String(), ref, logs, stop
 }
+
+// testClient avoids keep-alive: an idle or speculatively dialed connection
+// that never sends a request makes http.Server.Shutdown wait ~5s for it.
+var testClient = &http.Client{Transport: &http.Transport{DisableKeepAlives: true}}
 
 func do(t *testing.T, method, url string, headers map[string]string, body string) *http.Response {
 	t.Helper()
@@ -122,7 +126,7 @@ func do(t *testing.T, method, url string, headers map[string]string, body string
 	for k, v := range headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := testClient.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, url, err)
 	}

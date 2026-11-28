@@ -10,6 +10,7 @@
 
 ### Security
 
+- Go 1.27.4 (module and Docker image) fixes GO-2026-6859 in the standard library `net/http`.
 - `golang.org/x/net` v0.62.0 and `golang.org/x/text` v0.43.0 fix three vulnerabilities reachable from the HTML pipeline that parses arbitrary pages (GO-2026-6866, GO-2026-6860, GO-2026-5970).
 - Every response carries `X-Content-Type-Options: nosniff`, so browsers never reinterpret Markdown or JSON with third-party content as HTML.
 - The article scraper refuses to connect to non-public addresses (loopback, private, link-local, CGNAT, cloud metadata and reserved ranges), checked on the resolved IP at dial time. It only follows `http`/`https`, at most 5 redirects, and ignores proxy environment variables.
