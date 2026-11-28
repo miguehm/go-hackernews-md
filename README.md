@@ -10,6 +10,8 @@ The API is split into a small metadata index and on-demand Markdown downloads:
 
 Scraping runs in the background. API requests never trigger scraping; they only read the latest in-memory snapshot.
 
+The scraper only fetches `http`/`https` URLs, follows at most 5 redirects, ignores proxy environment variables and refuses to connect to non-public addresses (loopback, private, link-local, CGNAT, metadata and other reserved ranges). The check runs on the resolved IP at dial time, so it also covers redirects and DNS rebinding. When an article cannot be captured, `content_error` holds a stable code (`fetch_failed`, `fetch_timeout`, `fetch_blocked`, `unsupported_scheme`, `too_many_redirects`, `unsupported_content_type`, `body_too_large`, `upstream_status_<code>`, `extract_failed`, `convert_failed`, `too_large`, `hn_unavailable`, `item_unavailable`); the underlying error is only written to the server log.
+
 ## Features
 
 - Background refresh loop with initial warm-up on startup
@@ -46,7 +48,7 @@ Scraping runs in the background. API requests never trigger scraping; they only 
 | `internal/store` | Index/article models and thread-safe snapshot access |
 | `internal/todo` | Task model, `#tag` parsing, JSON persistence, Markdown rendering |
 | `internal/hn` | Hacker News Firebase API client |
-| `internal/scraper` | HTML fetch (timeouts/limits/content-type) and readability extraction |
+| `internal/scraper` | HTML fetch (timeouts/limits/content-type, SSRF guard) and readability extraction |
 | `internal/markdown` | HTML-to-Markdown conversion, article rendering, slug/filename helpers |
 
 ## Requirements
@@ -79,9 +81,9 @@ Environment variables read at startup:
 | Variable | Default | Format / Notes | Description |
 | --- | --- | --- | --- |
 | `PORT` | `8982` | string | HTTP listen port |
-| `REFRESH_INTERVAL` | `30m` | Go duration (`time.ParseDuration`, e.g. `10m`, `1h`) | Background refresh interval. Invalid values cause startup failure. Also drives `Retry-After` and `refresh_interval_seconds`. |
-| `SCRAPE_TIMEOUT` | `10s` | Go duration | Timeout per target site fetch |
-| `HN_TIMEOUT` | `10s` | Go duration | Timeout for Hacker News API requests |
+| `REFRESH_INTERVAL` | `30m` | Go duration (`time.ParseDuration`, e.g. `10m`, `1h`) | Background refresh interval. Must be positive; invalid values cause startup failure. Also drives `refresh_interval_seconds`. |
+| `SCRAPE_TIMEOUT` | `10s` | Go duration (positive) | Timeout per target site fetch. Invalid values cause startup failure. |
+| `HN_TIMEOUT` | `10s` | Go duration (positive) | Timeout for Hacker News API requests. Invalid values cause startup failure. |
 | `API_KEYS` | _(empty)_ | Comma-separated string(s) | When set, enables API key auth. Protected endpoints require `Authorization: Bearer <key>`. Multiple keys are accepted for rotation. |
 | `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. |
 | `DATA_DIR` | `./data` | path | Directory for persistent data. Docker defaults to `/data`. |
@@ -390,9 +392,11 @@ If the service has no ready snapshot yet, both endpoints return `503` with `Retr
 {
   "error": "warming_up",
   "message": "Server is warming up, try again later",
-  "retry_after_seconds": 1800
+  "retry_after_seconds": 15
 }
 ```
+
+While warming up, `Retry-After` is a fixed 15 seconds: the first refresh normally completes within seconds, so clients should not wait a full refresh interval.
 
 `ErrorResponse.error` is one of `unauthorized`, `forbidden`, `warming_up`, `invalid_request`, `not_found`, `method_not_allowed`, `payload_too_large`, `precondition_required`, `revision_conflict`, or `internal_error`.
 

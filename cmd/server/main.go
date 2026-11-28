@@ -191,7 +191,7 @@ func main() {
 	todoLocation := loadLocationEnv("TODO_TIMEZONE", time.UTC)
 	todoHandler := api.NewTodoHandlerWithLocation(todoStore, os.Getenv("PUBLIC_BASE_URL"), authEnabled || todoAllowInsecureWrites, todoLocation)
 
-	h := api.New(st, int(refreshInterval.Seconds()))
+	h := api.New(st, api.DefaultWarmupRetryAfter)
 	statusHandler := api.NewStatusHandler(st, todoStore, authEnabled, buildVersion())
 	mux := http.NewServeMux()
 

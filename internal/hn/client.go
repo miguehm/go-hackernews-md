@@ -8,7 +8,10 @@ import (
 	"time"
 )
 
-const baseURL = "https://hacker-news.firebaseio.com/v0"
+const (
+	baseURL   = "https://hacker-news.firebaseio.com/v0"
+	userAgent = "hnmd-bot/1.0 (+https://news.ycombinator.com)"
+)
 
 type Item struct {
 	ID          int    `json:"id"`
@@ -37,7 +40,7 @@ func NewClient(timeout time.Duration) *Client {
 }
 
 func (c *Client) TopStoryIDs(ctx context.Context) ([]int, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/topstories.json", nil)
+	req, err := newRequest(ctx, c.baseURL+"/topstories.json")
 	if err != nil {
 		return nil, err
 	}
@@ -58,7 +61,7 @@ func (c *Client) TopStoryIDs(ctx context.Context) ([]int, error) {
 
 func (c *Client) Item(ctx context.Context, id int) (*Item, error) {
 	url := fmt.Sprintf("%s/item/%d.json", c.baseURL, id)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := newRequest(ctx, url)
 	if err != nil {
 		return nil, err
 	}
@@ -75,4 +78,14 @@ func (c *Client) Item(ctx context.Context, id int) (*Item, error) {
 		return nil, err
 	}
 	return &item, nil
+}
+
+func newRequest(ctx context.Context, url string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	req.Header.Set("Accept", "application/json")
+	return req, nil
 }

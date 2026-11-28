@@ -177,3 +177,15 @@ func TestClientContextCanceled(t *testing.T) {
 		t.Fatalf("Item = %v, %v; want error and nil", item, err)
 	}
 }
+
+func TestClientSendsUserAgent(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("User-Agent"); got != userAgent {
+			t.Errorf("User-Agent = %q, want %q", got, userAgent)
+		}
+		_, _ = w.Write([]byte(`[1]`))
+	})
+	if _, err := c.TopStoryIDs(context.Background()); err != nil {
+		t.Fatalf("TopStoryIDs: %v", err)
+	}
+}

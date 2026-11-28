@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Task responses (`POST`, `GET`, `PATCH /v1/todos/tasks...`) again return `ETag: "<revision>"` as documented. A content hash used to overwrite it, so sending the received `ETag` back in `If-Match` failed with `400`.
+- `SCRAPE_TIMEOUT` and `HN_TIMEOUT` with invalid values no longer silently disable HTTP timeouts, and `REFRESH_INTERVAL=0s` no longer panics. All three must be positive durations, otherwise startup fails.
+- Shutdown now cancels an in-flight refresh and waits for the refresher to stop.
+
+### Security
+
+- The article scraper refuses to connect to non-public addresses (loopback, private, link-local, CGNAT, cloud metadata and reserved ranges), checked on the resolved IP at dial time. It only follows `http`/`https`, at most 5 redirects, and ignores proxy environment variables.
+- `content_error` now holds stable codes such as `fetch_failed`, `fetch_timeout` or `upstream_status_404` instead of raw Go errors, which could expose internal addresses. Details go to the server log.
+
+### Changed
+
+- The warm-up `503` uses a fixed `Retry-After: 15` instead of the full refresh interval.
+- The Hacker News client sends a `User-Agent`.
+
+### Migration for clients
+
+- Treat `content_error` as an opaque code; the previous free-form text (`fetch: ...`, `item unavailable`) is gone.
+
 ## 1.6.0 — 2026-11-27
 
 ### Added

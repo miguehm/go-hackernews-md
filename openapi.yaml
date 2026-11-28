@@ -1050,8 +1050,8 @@ components:
       description: Servicio arrancando o temporalmente no disponible
       headers:
         Retry-After:
-          description: Segundos sugeridos antes de reintentar (el cliente lo usa en el mensaje).
-          schema: { type: integer, example: 300 }
+          description: Segundos sugeridos antes de reintentar (el cliente lo usa en el mensaje). Durante el arranque es fijo, 15 s.
+          schema: { type: integer, example: 15 }
       content:
         application/json:
           schema:
@@ -1061,7 +1061,7 @@ components:
               value:
                 error: warming_up
                 message: Server is warming up, try again later
-                retry_after_seconds: 300
+                retry_after_seconds: 15
     NotModified:
       description: Sin cambios; el cliente conserva su copia local.
       headers:
@@ -1415,7 +1415,13 @@ components:
         content_error:
           type: string
           nullable: true
-          description: Motivo corto cuando content_status != ok (para el log/UX).
+          description: |
+            Código estable cuando content_status != ok (para el log/UX). Nunca
+            incluye direcciones ni detalles internos. Valores: fetch_failed,
+            fetch_timeout, fetch_blocked, unsupported_scheme, too_many_redirects,
+            unsupported_content_type, body_too_large, upstream_status_<código>,
+            extract_failed, convert_failed, too_large, hn_unavailable,
+            item_unavailable. Los clientes deben tolerar valores nuevos.
         content_url:
           type: string
           nullable: true

@@ -127,16 +127,17 @@ func (s *Service) Refresh(ctx context.Context) error {
 func (s *Service) processOne(ctx context.Context, rank int, id int, prevItem *store.IndexItem, prevArticle *store.Article) (store.IndexItem, *store.Article) {
 	it, err := s.hn.Item(ctx, id)
 	if err != nil {
+		log.Printf("item %d: hn item: %v", id, err)
 		if prevItem != nil && prevArticle != nil {
 			return retainedItem(rank, id, prevItem, prevArticle), prevArticle
 		}
-		return newErrorItem(rank, id, store.StatusError, err.Error()), nil
+		return newErrorItem(rank, id, store.StatusError, codeHNUnavailable), nil
 	}
 	if it == nil || it.ID == 0 {
 		if prevItem != nil && prevArticle != nil {
 			return retainedItem(rank, id, prevItem, prevArticle), prevArticle
 		}
-		return newErrorItem(rank, id, store.StatusNoContent, "item unavailable"), nil
+		return newErrorItem(rank, id, store.StatusNoContent, codeItemUnavailable), nil
 	}
 
 	item := indexItemFromHN(rank, id, it)
@@ -145,33 +146,18 @@ func (s *Service) processOne(ctx context.Context, rank int, id int, prevItem *st
 	}
 
 	var body string
-	if it.URL != "" {
-		htmlStr, fetchErr := s.fetcher.FetchHTML(ctx, it.URL)
+	switch {
+	case it.URL != "":
+		fetched, code, fetchErr := s.fetchBody(ctx, it.URL)
 		if fetchErr != nil {
+			log.Printf("item %d: %s %s: %v", id, code, it.URL, fetchErr)
 			if prevArticle == nil {
-				return errorWithMetadata(item, "fetch: "+fetchErr.Error()), nil
+				return errorWithMetadata(item, code), nil
 			}
-			body = string(prevArticle.Content)
-		} else {
-			contentHTML, extractErr := scraper.ExtractContent(htmlStr, it.URL)
-			if extractErr != nil {
-				if prevArticle == nil {
-					return errorWithMetadata(item, "extract: "+extractErr.Error()), nil
-				}
-				body = string(prevArticle.Content)
-			} else {
-				md, convertErr := mdconv.HTMLToMarkdown(contentHTML)
-				if convertErr != nil {
-					if prevArticle == nil {
-						return errorWithMetadata(item, "convert: "+convertErr.Error()), nil
-					}
-					body = string(prevArticle.Content)
-				} else {
-					body = md
-				}
-			}
+			fetched = string(prevArticle.Content)
 		}
-	} else if it.Text != "" {
+		body = fetched
+	case it.Text != "":
 		md, convertErr := mdconv.HTMLToMarkdown(it.Text)
 		if convertErr != nil {
 			body = it.Text
@@ -181,6 +167,25 @@ func (s *Service) processOne(ctx context.Context, rank int, id int, prevItem *st
 	}
 
 	return s.finishArticle(item, body, prevArticle)
+}
+
+// fetchBody downloads a page and converts its main content to Markdown. On
+// failure it returns a stable, client-safe error code alongside the detailed
+// error, which is only meant for logs.
+func (s *Service) fetchBody(ctx context.Context, pageURL string) (string, string, error) {
+	htmlStr, err := s.fetcher.FetchHTML(ctx, pageURL)
+	if err != nil {
+		return "", fetchErrorCode(err), err
+	}
+	contentHTML, err := scraper.ExtractContent(htmlStr, pageURL)
+	if err != nil {
+		return "", codeExtractFailed, err
+	}
+	md, err := mdconv.HTMLToMarkdown(contentHTML)
+	if err != nil {
+		return "", codeConvertFailed, err
+	}
+	return md, "", nil
 }
 
 func (s *Service) finishArticle(item store.IndexItem, body string, prevArticle *store.Article) (store.IndexItem, *store.Article) {
@@ -194,7 +199,7 @@ func (s *Service) finishArticle(item store.IndexItem, body string, prevArticle *
 			md = mdconv.Render(meta, contentBody)
 		}
 		if len(md) > maxArticleBytes {
-			return errorWithMetadata(item, "too_large"), nil
+			return errorWithMetadata(item, codeTooLarge), nil
 		}
 	}
 

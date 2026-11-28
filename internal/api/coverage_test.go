@@ -22,10 +22,10 @@ func TestNewDefaultsRetryAfter(t *testing.T) {
 		if rr.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want 503", rr.Code)
 		}
-		if got := rr.Header().Get("Retry-After"); got != "300" {
-			t.Fatalf("Retry-After = %q, want 300", got)
+		if got := rr.Header().Get("Retry-After"); got != "15" {
+			t.Fatalf("Retry-After = %q, want 15", got)
 		}
-		if !strings.Contains(rr.Body.String(), `"retry_after_seconds":300`) {
+		if !strings.Contains(rr.Body.String(), `"retry_after_seconds":15`) {
 			t.Fatalf("body = %s", rr.Body.String())
 		}
 	}

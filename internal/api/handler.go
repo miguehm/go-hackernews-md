@@ -17,6 +17,11 @@ const (
 	minLimit      = 1
 	maxLimit      = 30
 	indexMaxBytes = 128 * 1024
+
+	// DefaultWarmupRetryAfter is the Retry-After (seconds) sent while no
+	// snapshot is ready. The first refresh usually completes within seconds,
+	// so clients should not wait a full refresh interval.
+	DefaultWarmupRetryAfter = 15
 )
 
 var itemIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
@@ -28,7 +33,7 @@ type Handler struct {
 
 func New(st *store.Store, retryAfterSeconds int) *Handler {
 	if retryAfterSeconds <= 0 {
-		retryAfterSeconds = 300
+		retryAfterSeconds = DefaultWarmupRetryAfter
 	}
 	return &Handler{store: st, retryAfterSeconds: retryAfterSeconds}
 }

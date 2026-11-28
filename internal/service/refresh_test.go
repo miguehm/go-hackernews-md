@@ -226,7 +226,7 @@ func TestProcessOne(t *testing.T) {
 	}{
 		{
 			name: "item error without previous", itemErr: errors.New("boom"),
-			wantStatus: store.StatusError, wantErr: "boom",
+			wantStatus: store.StatusError, wantErr: codeHNUnavailable,
 		},
 		{
 			name: "item error with previous", itemErr: errors.New("boom"), withPrev: true,
@@ -234,7 +234,7 @@ func TestProcessOne(t *testing.T) {
 		},
 		{
 			name:       "nil item without previous",
-			wantStatus: store.StatusNoContent, wantErr: "item unavailable",
+			wantStatus: store.StatusNoContent, wantErr: codeItemUnavailable,
 		},
 		{
 			name: "nil item with previous", withPrev: true,
@@ -250,7 +250,7 @@ func TestProcessOne(t *testing.T) {
 		},
 		{
 			name: "fetch error without previous", item: &hn.Item{ID: 1, Title: "T", URL: "https://example.com"},
-			fetchErr: errors.New("boom"), wantStatus: store.StatusError, wantErr: "fetch: boom",
+			fetchErr: errors.New("boom"), wantStatus: store.StatusError, wantErr: codeFetchFailed,
 		},
 		{
 			name: "fetch error with previous", item: &hn.Item{ID: 1, Title: "T", URL: "https://example.com"},
