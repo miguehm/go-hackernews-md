@@ -212,13 +212,14 @@ func (s *Service) finishArticle(item store.IndexItem, body string, prevArticle *
 	return item, article
 }
 
-func (s *Service) StartRefresher(ctx context.Context) {
+// StartRefresher runs the refresh loop in the background until ctx is
+// canceled. The returned channel is closed once the loop has fully stopped.
+func (s *Service) StartRefresher(ctx context.Context) <-chan struct{} {
+	done := make(chan struct{})
 	go func() {
+		defer close(done)
 		// initial warm-up
-		if err := s.Refresh(ctx); err != nil {
-			log.Printf("initial refresh error: %v", err)
-			s.recordRefreshError(err)
-		}
+		s.refreshOnce(ctx, "initial refresh")
 
 		ticker := time.NewTicker(s.cfg.RefreshInterval)
 		defer ticker.Stop()
@@ -227,15 +228,25 @@ func (s *Service) StartRefresher(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				rctx, cancel := context.WithTimeout(context.Background(), s.cfg.RefreshInterval)
-				if err := s.Refresh(rctx); err != nil {
-					log.Printf("refresh error: %v", err)
-					s.recordRefreshError(err)
-				}
-				cancel()
+				s.refreshOnce(ctx, "refresh")
 			}
 		}
 	}()
+	return done
+}
+
+// refreshOnce runs a single refresh bounded by the refresh interval and
+// derived from ctx, so shutdown cancels in-flight work.
+func (s *Service) refreshOnce(ctx context.Context, label string) {
+	rctx, cancel := context.WithTimeout(ctx, s.cfg.RefreshInterval)
+	defer cancel()
+	if err := s.Refresh(rctx); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("%s error: %v", label, err)
+		s.recordRefreshError(err)
+	}
 }
 
 func (s *Service) recordRefreshError(err error) {

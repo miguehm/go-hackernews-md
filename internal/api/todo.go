@@ -78,7 +78,11 @@ func writeTodoValidationError(w http.ResponseWriter, err error) {
 func writeTodoJSON(w http.ResponseWriter, status int, data []byte) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	w.Header().Set("ETag", etagFor(data))
+	// Task responses already carry ETag: "<revision>" (the value clients send
+	// back in If-Match); only fall back to a content hash when none was set.
+	if w.Header().Get("ETag") == "" {
+		w.Header().Set("ETag", etagFor(data))
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(status)
 	_, _ = w.Write(data)

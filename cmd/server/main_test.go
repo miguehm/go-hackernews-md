@@ -3,6 +3,7 @@ package main
 import (
 	"reflect"
 	"testing"
+	"time"
 
 	"hnmd/internal/api"
 )
@@ -120,6 +121,33 @@ func TestParseAPIKeys(t *testing.T) {
 			got := parseAPIKeys(tt.raw)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("parseAPIKeys(%q) = %v, want %v", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseDurationEnv(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "default", value: "", want: 10 * time.Second},
+		{name: "valid", value: "250ms", want: 250 * time.Millisecond},
+		{name: "invalid", value: "abc", wantErr: true},
+		{name: "zero", value: "0s", wantErr: true},
+		{name: "negative", value: "-1m", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("HNMD_TEST_DURATION", tt.value)
+			got, err := parseDurationEnv("HNMD_TEST_DURATION", "10s")
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Fatalf("got %s, want %s", got, tt.want)
 			}
 		})
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -51,9 +52,24 @@ func parseIntEnv(key string, def int) int {
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(v))
 	if err != nil {
+		log.Printf("warning: invalid %s %q: %v; using %d", key, v, err, def)
 		return def
 	}
 	return n
+}
+
+// parseDurationEnv reads a strictly positive duration. A zero or negative
+// value is rejected: it would disable HTTP client timeouts or panic the ticker.
+func parseDurationEnv(key, def string) (time.Duration, error) {
+	raw := strings.TrimSpace(getenv(key, def))
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", key, raw, err)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("invalid %s %q: must be greater than zero", key, raw)
+	}
+	return d, nil
 }
 
 func loadLocationEnv(key string, def *time.Location) *time.Location {
@@ -124,13 +140,18 @@ func parseCORSOrigins(raw string) []string {
 
 func main() {
 	port := getenv("PORT", "8982")
-	refreshStr := getenv("REFRESH_INTERVAL", "30m")
-	refreshInterval, err := time.ParseDuration(refreshStr)
+	refreshInterval, err := parseDurationEnv("REFRESH_INTERVAL", "30m")
 	if err != nil {
-		log.Fatalf("invalid REFRESH_INTERVAL: %v", err)
+		log.Fatal(err)
 	}
-	scrapeTimeout, _ := time.ParseDuration(getenv("SCRAPE_TIMEOUT", "10s"))
-	hnTimeout, _ := time.ParseDuration(getenv("HN_TIMEOUT", "10s"))
+	scrapeTimeout, err := parseDurationEnv("SCRAPE_TIMEOUT", "10s")
+	if err != nil {
+		log.Fatal(err)
+	}
+	hnTimeout, err := parseDurationEnv("HN_TIMEOUT", "10s")
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	cfg := service.Config{
 		TopN:            20,
@@ -147,7 +168,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	svc.StartRefresher(ctx)
+	refresherDone := svc.StartRefresher(ctx)
 
 	apiKeys := parseAPIKeys(os.Getenv("API_KEYS"))
 	protectHealth := parseBoolEnv("PROTECT_HEALTH", false)
@@ -232,4 +253,9 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+	select {
+	case <-refresherDone:
+	case <-shutdownCtx.Done():
+		log.Println("warning: refresher did not stop before shutdown timeout")
+	}
 }
