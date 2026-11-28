@@ -5,14 +5,6 @@ import (
 	"strings"
 )
 
-// DefaultCORSOrigins is the allowlist used when CORS_ORIGINS is not set.
-var DefaultCORSOrigins = []string{
-	"web",
-	"http://localhost:5173",
-	"https://localhost",
-	"capacitor://localhost",
-}
-
 const (
 	corsAllowMethods  = "GET, HEAD, POST, PATCH, DELETE, OPTIONS"
 	corsAllowHeaders  = "Authorization, Content-Type, If-Match, If-None-Match, X-Request-ID"

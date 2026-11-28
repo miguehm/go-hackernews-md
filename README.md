@@ -37,13 +37,14 @@ The scraper only fetches `http`/`https` URLs, follows at most 5 redirects, ignor
 2. `internal/service` fetches top story IDs and items from the Hacker News API and processes them concurrently.
 3. `internal/scraper` fetches and extracts article HTML; `internal/markdown` converts HTML to Markdown and renders the final article header.
 4. `internal/store` keeps one immutable snapshot containing the metadata index and article bodies.
-5. `internal/api` serves `/v1/status`, `/v1/top`, `/v1/articles/{itemId}.md`, the todo endpoints under `/v1/todos*`, the deprecated `/top` alias, and `/health` behavior from `main`.
+5. `internal/api` serves `/v1/status`, `/v1/top`, `/v1/articles/{itemId}.md`, the todo endpoints under `/v1/todos*`, the deprecated `/top` alias, and `/health`; `api.NewRouter` registers the routes and the middleware chain.
 6. `internal/todo` parses `#tags`, persists tasks in a JSON file and renders the Markdown views.
 
 | Package | Responsibility |
 | --- | --- |
-| `cmd/server` | Entrypoint, env config, HTTP server, graceful shutdown |
-| `internal/api` | HTTP handlers, auth middleware, JSON errors |
+| `cmd/server` | Entrypoint (`run`/`serve`), HTTP server, graceful shutdown |
+| `internal/config` | Environment variable parsing and validation |
+| `internal/api` | Router, HTTP handlers, middleware (auth, CORS, gzip, logging, recovery), JSON errors |
 | `internal/service` | Refresh cycle, concurrency, status mapping, retention, size limits |
 | `internal/store` | Index/article models and thread-safe snapshot access |
 | `internal/todo` | Task model, `#tag` parsing, JSON persistence, Markdown rendering |
@@ -76,6 +77,8 @@ curl -X POST -H "Authorization: Bearer <key>" -H "Content-Type: application/json
 
 ## Configuration
 
+All invalid strict variables are reported together at startup. Lenient variables (booleans, `TODO_MAX_TASKS`, `TODO_TIMEZONE`) fall back to their default and log a `configuration` warning.
+
 Environment variables read at startup:
 
 | Variable | Default | Format / Notes | Description |
@@ -83,13 +86,15 @@ Environment variables read at startup:
 | `PORT` | `8982` | string | HTTP listen port |
 | `REFRESH_INTERVAL` | `30m` | Go duration (`time.ParseDuration`, e.g. `10m`, `1h`) | Background refresh interval. Must be positive; invalid values cause startup failure. Also drives `refresh_interval_seconds`. |
 | `SCRAPE_TIMEOUT` | `10s` | Go duration (positive) | Timeout per target site fetch. Invalid values cause startup failure. |
+| `TOP_N` | `20` | integer, 1–500 | Number of top stories captured per refresh. Invalid values cause startup failure. |
+| `MAX_CONCURRENCY` | `6` | integer, 1–64 | Items processed in parallel during a refresh. Invalid values cause startup failure. |
 | `HN_TIMEOUT` | `10s` | Go duration (positive) | Timeout for Hacker News API requests. Invalid values cause startup failure. |
 | `API_KEYS` | _(empty)_ | Comma-separated string(s) | When set, enables API key auth. Protected endpoints require `Authorization: Bearer <key>`. Multiple keys are accepted for rotation. |
 | `PROTECT_HEALTH` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | When `true` and auth is enabled, `GET /health` also requires a valid API key. |
 | `DATA_DIR` | `./data` | path | Directory for persistent data. Docker defaults to `/data`. |
 | `TODO_FILE` | `<DATA_DIR>/todos.json` | path | JSON file used by the todo store. A `.bak` copy is kept. |
 | `TODO_TIMEZONE` | `UTC` | IANA timezone | Default timezone for todo `due_soon`/`overdue`, counts and rendering. Can be overridden per request with `tz`. Invalid values fall back to UTC with a warning. |
-| `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. |
+| `TODO_MAX_TASKS` | `1000` | integer | Maximum number of stored tasks. Invalid values fall back to the default with a warning. |
 | `TODO_ALLOW_INSECURE_WRITES` | `false` | `true/false`, `1/0`, `yes/no`, `on/off` | Allow todo writes when `API_KEYS` is unset. Off by default. |
 | `PUBLIC_BASE_URL` | _(empty)_ | URL | Optional external base URL used for absolute `hn_url` values in `/v1/todos/top`. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error` | Minimum log level. Invalid values cause startup failure. |
@@ -451,7 +456,8 @@ A successful conditional read on `/v1/top`, articles, `/v1/todos` or `/v1/todos/
 
 ```text
 cmd/server/          # application entrypoint
-internal/api/        # HTTP handlers, auth, errors
+internal/api/        # router, HTTP handlers, middleware, errors
+internal/config/     # environment configuration and validation
 internal/hn/         # Hacker News API client
 internal/markdown/   # HTML-to-Markdown, rendering, slug helpers
 internal/scraper/    # page fetch and content extraction

@@ -13,7 +13,7 @@ func corsTestHandler() http.Handler {
 		_, _ = w.Write([]byte("ok"))
 	})
 	authed := BearerAPIKeyAuth([]string{"key"})(inner)
-	return CORS(DefaultCORSOrigins)(authed)
+	return CORS(testCORSOrigins)(authed)
 }
 
 func TestCORSPreflightBeforeAuth(t *testing.T) {
@@ -106,7 +106,7 @@ func TestCORSWildcardIgnored(t *testing.T) {
 }
 
 func TestCORSAndGzipVary(t *testing.T) {
-	handler := GzipMiddleware(CORS(DefaultCORSOrigins)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := GzipMiddleware(CORS(testCORSOrigins)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_, _ = w.Write([]byte(`{"message":"` + strings.Repeat("x", 128) + `"}`))
 	})))
@@ -127,3 +127,5 @@ func TestCORSAndGzipVary(t *testing.T) {
 		t.Fatalf("Vary = %q", vary)
 	}
 }
+
+var testCORSOrigins = []string{"web", "http://localhost:5173", "https://localhost", "capacitor://localhost"}
